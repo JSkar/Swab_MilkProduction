@@ -1,0 +1,1147 @@
+---
+title: Alpha Diversity, PCAs, and Linear Modelling of All Three Lactations with DIM
+  and Milk Volume
+author: "Joseph Skarlupka V"
+date: "2024-10-31"
+output: html_document
+---
+
+#Loading Libraries
+```{r, Libraries}
+library("miLineage")
+library("Maaslin2")
+library("ggplot2")
+library("phyloseq")
+library("vegan")
+library("DESeq2")
+library("reltools")
+library("phylosmith")
+library("gridExtra")
+library("ggpubr")
+
+
+set.seed(81471438)
+```
+
+
+#Importing files of interest
+```{r, import the files of interest}
+#Load in the phyloseq object that contains
+  #>4000 sequences
+
+load("Physeq Object MilkProduction Paper All Samples No Rare or Abund.RData")
+
+
+#Removing samples with less than 7000 sequences
+physeq <- prune_samples(sample_sums(physeq) >= 7000, physeq)
+
+
+okabe_ito_colors <- c("#E69F00", "#56B4E9", "#009E73")
+
+```
+
+#Milk Production - Creating High and Low Tiers of Milk Production Based on the top/bottom 20%
+```{r}
+Milk7d_T1 <- sample_data(physeq)$Milk7d_T1
+Milk7d_T1 <- Milk7d_T1[order(Milk7d_T1)]
+Milk7d_T1
+
+cutoff = round((0.2 * length(Milk7d_T1)), digits=0)
+
+#List is sorted from lowest to highest
+Milk7d_T1[cutoff]
+  # 65.2
+#Anything lower than 65.2 is considered Low Production
+
+Milk7d_T1[(length(Milk7d_T1) - cutoff)]
+  # 110
+#Anything higher than 110 is considered High Production
+
+sample_data(physeq)$Milk_Tier <- ifelse(sample_data(physeq)$Milk7d_T1 <= 65.2, "Low", ifelse(sample_data(physeq)$Milk7d_T1 >= 110, "High", "Mid"))
+
+
+rm(list=c("Milk7d_T1", "cutoff"))
+
+
+```
+
+##Adding categories for period of lactation and combined parity/period
+```{r}
+sample_data(physeq)$PARITY <- gsub(" ", "", sample_data(physeq)$PARITY)
+
+sample_data(physeq)$PARITY <- as.numeric(sample_data(physeq)$PARITY)
+sample_data(physeq)$DIM <- as.numeric(sample_data(physeq)$DIM)
+sample_data(physeq)$PARITY <- as.numeric(sample_data(physeq)$PARITY)
+
+
+sample_data(physeq)$STAGE <- ifelse(sample_data(physeq)$DIM < 101, "Early", ifelse((sample_data(physeq)$DIM >=101 & sample_data(physeq)$DIM < 202), "Middle", "Late"))
+
+sample_data(physeq)$PARITY.GROUP <- ifelse(sample_data(physeq)$PARITY == 1, "First", ifelse(sample_data(physeq)$PARITY == 2, "Second", ifelse(sample_data(physeq)$PARITY == 3, "Third", "Multi")))
+
+sample_data(physeq)$Parity.Stage <- paste0(sample_data(physeq)$PARITY.GROUP,".",sample_data(physeq)$STAGE)
+
+
+table(sample_data(physeq)$PARITY.GROUP)
+table(sample_data(physeq)$PARITY)
+table(sample_data(physeq)$Parity.Stage)
+
+```
+
+
+#Rarefying the phyloseq object
+```{r}
+rowSums(otu_table(physeq))
+
+#Rarefying
+physeq.swab1.rare <- rarefy_even_depth(physeq, sample.size=7000)
+table(sample_data(physeq.swab1.rare)$parity.group)
+table(sample_data(physeq.swab1.rare)$Sample.Type_GFE.Efficiency)
+table(sample_data(physeq.swab1.rare)$Sample.Type_RFI.Efficiency)
+
+#7000 - 30 samples removed
+
+tab <- otu_table(physeq.swab1.rare)
+class(tab) <- "matrix"
+#rarecurve(tab, step=50, cex=0.5, xlim=c(0,15000), ylim=c(0,2000))
+rm(tab)
+
+#Pulling back out the rarefied ASV table with new column names
+ASV1 = as(otu_table(physeq.swab1.rare), "matrix")
+if(taxa_are_rows(physeq.swab1.rare)){ASV1 <- t(ASV1)}
+# Coerce to data.frame
+ASV.7000 = as.data.frame(ASV1)
+rm(ASV1)
+
+
+#Pulling back out the metadata table with new column names
+meta.7000 = as(sample_data(physeq.swab1.rare), "matrix")
+# Coerce to data.frame
+meta.7000 = as.data.frame(meta.7000)
+
+
+#Pulling out new taxonomy file
+tax.7000 = as(tax_table(physeq.swab1.rare), "matrix")
+tax.7000 = as.data.frame(tax.7000)
+
+```
+
+
+##Abundance Cutoff of Phyloseq Object
+```{r}
+#Removing ASVs from which there are no samples with more than 10 sequences
+physeq.swab1.abund <- prune_taxa(taxa_sums(physeq.swab1.rare)>10,physeq.swab1.rare)
+
+
+```
+
+
+##Pulling out the ASV, Meta, and Taxonomy of the rarefied and abundance cutoff phyloseq object
+```{r}
+#Pulling back out the rarefied ASV table with new column names
+ASV1 = as(otu_table(physeq.swab1.abund), "matrix")
+if(taxa_are_rows(physeq.swab1.abund)){ASV1 <- t(ASV1)}
+# Coerce to data.frame
+ASV.rare.abund = as.data.frame(ASV1)
+rm(ASV1)
+
+
+#Pulling back out the metadata table with new column names
+meta.rare.abund = as(sample_data(physeq.swab1.abund), "matrix")
+# Coerce to data.frame
+meta.rare.abund = as.data.frame(meta.rare.abund)
+
+
+#Pulling out new taxonomy file
+tax.rare.abund = as(tax_table(physeq.swab1.abund), "matrix")
+tax.rare.abund = as.data.frame(tax.rare.abund)
+
+```
+
+
+##Creating a phyloseq object of that includes an abundance cutoff, but no rarefaction
+```{r}
+#Removing ASVs from which there are no samples with more than 10 sequences
+
+physeq.norare.abund <- prune_taxa(taxa_sums(physeq)>10,physeq)
+
+save(physeq.norare.abund, file="NO RARE 1st Lactation ARS Swabs Abund Cutoff Physeq Object.RData")
+
+```
+
+
+##Adding alpha diversity metrics in phyloseq
+```{r, adding alpha diversity metrics in phyloseq, then pulling out the component tables again so I can do some work in vegan}
+#putting all metrics into a file
+div <- phyloseq::estimate_richness(physeq.swab1.abund, measures=c("Observed", "Chao1", "ACE", "Shannon", "InvSimpson", "Simpson"))
+row.names(div) <- gsub(".", "-", row.names(div), fixed=TRUE)
+physeq.swab1.abund <- merge_phyloseq(physeq.swab1.abund, sample_data(div))
+
+rm(list=c("div"))
+
+```
+
+
+##Saving the Physeq object
+```{r}
+
+save(physeq.swab1.abund, file="1st Lactation ARS Swabs Norm and Abund Physeq Object.RData")
+
+
+```
+
+
+#Looking at the distribution of DIM and milk production values
+```{r}
+ggplot(meta.rare.abund, aes(x=DIM, y=Milk7d_T1)) + 
+  geom_point()+
+  geom_smooth(method=lm)
+
+shapiro.test(meta.rare.abund$DIM) # => p = 0.1229
+shapiro.test(meta.rare.abund$Milk7d_T1) # => p = 0.09
+
+ggqqplot(meta.rare.abund$DIM, ylab = "DIM")
+ggqqplot(meta.rare.abund$Milk7d_T1, ylab = "Milk7d_T1")
+
+res <- cor.test(meta.rare.abund$DIM, meta.rare.abund$Milk7d_T1, 
+                    method = "spearman")
+res
+
+
+```
+
+```{r}
+meta <- as.matrix(sample_data(physeq))
+meta <- as.data.frame(meta)
+```
+
+##FIRST LACTATION Animals
+```{r}
+physeq.first <- subset_samples(physeq, parity.group == "First")
+
+Milk7d_T1 <- sample_data(physeq.first)$Milk7d_T1
+Milk7d_T1 <- Milk7d_T1[order(Milk7d_T1)]
+Milk7d_T1
+
+cutoff = round((0.2 * length(Milk7d_T1)), digits=0)
+
+#List is sorted from lowest to highest
+Milk7d_T1[cutoff]
+  # 61
+#Anything lower than 61 is considered Low Production
+
+Milk7d_T1[(length(Milk7d_T1) - cutoff)]
+  # 87.5
+#Anything higher than 87.5 is considered High Production
+
+sample_data(physeq.first)$Milk_Tier <- ifelse(sample_data(physeq.first)$Milk7d_T1 <= 61, "Low", ifelse(sample_data(physeq.first)$Milk7d_T1 >= 87.5, "High", "Mid"))
+
+
+rm(list=c("Milk7d_T1", "cutoff"))
+
+
+#Applying PCA to the centered log-ratio (CLR) transformed sequence counts
+ps_clr <- microbiome::transform(physeq.first, "clr")
+
+#PCA via phyloseq
+ord_clr <- phyloseq::ordinate(ps_clr, "RDA")
+
+#Plot scree plot
+phyloseq::plot_scree(ord_clr) +
+  geom_bar(stat="identity", fill="blue") +
+  labs(x = "\nAxis", y = "Proportion of Variance\n")
+
+#Examine eigenvalues and % proportional variance explained
+head(ord_clr$CA$eig)
+
+sapply(ord_clr$CA$eig[1:5], function(x) x / sum(ord_clr$CA$eig))     
+
+#Scale axes and plot ordination
+clr1 <- ord_clr$CA$eig[1] / sum(ord_clr$CA$eig)
+clr2 <- ord_clr$CA$eig[2] / sum(ord_clr$CA$eig)
+z_first <- phyloseq::plot_ordination(physeq.first, ord_clr, type="samples", color="Milk_Tier") + 
+  geom_point(size = 2) +
+  coord_fixed() +  
+  ylim(-12,12) +
+  xlim(-12,12) +
+  stat_ellipse(aes(group = Milk_Tier), linetype = 2) +
+  guides(color = guide_legend(title = "Milk Volume")) +
+  ggtitle("First Lactation PCA by Milk Volume Tier") +
+  scale_color_manual(values = okabe_ito_colors)
+
+z_first
+
+ordination_plot <- plot_ordination(physeq.first, ord_clr, type="samples", color="Milk_Tier")
+plot_data <- as.data.frame(ordination_plot$data)
+
+
+#Test for differences between groups
+#Generate distance matrix
+clr_dist_matrix <- phyloseq::distance(ps_clr, method = "euclidean") 
+#ADONIS test
+vegan::adonis2(clr_dist_matrix ~ sample_data(ps_clr)$Milk_Tier)
+#No significance
+
+
+#Pull out this PC1 column, combine with the GFE_Efficiency column, and then plot!
+meta.rare.first <- meta[meta$parity.group == "First",]
+
+plot_data <- plot_data[order(row.names(plot_data)),]
+meta.rare.abund.2 <- meta.rare.first[order(row.names(meta.rare.first)),]
+
+plot_data_2 <- as.data.frame(plot_data[,1:2])
+row.names(plot_data_2) <- row.names(plot_data)
+colnames(plot_data_2)[1] <- "PC1"
+colnames(plot_data_2)[2] <- "PC2"
+
+meta.rare.abund.3 <- merge(meta.rare.abund.2, plot_data_2, by="row.names")
+row.names(meta.rare.abund.3) <- meta.rare.abund.3$Row.names
+
+
+meta.rare.abund.3$DIM <- as.numeric(meta.rare.abund.3$DIM)
+meta.rare.abund.3$Milk7d_T1 <- as.numeric(meta.rare.abund.3$Milk7d_T1)
+meta.rare.abund.3$Darkness <- as.numeric(meta.rare.abund.3$Darkness)
+
+
+##Linear modelling of GFE/RFI against PC1 axis for ALL ANIMALS
+dim.pc1.1 <- ggplot(meta.rare.abund.3, aes(DIM, PC1), geom_smooth(method="lm", se=FALSE)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("DIM x PC1") +
+    theme(axis.title=element_text(size=14))
+
+dim.pc2.1 <- ggplot(meta.rare.abund.3, aes(DIM, PC2), geom_smooth(method="lm", se=FALSE)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("DIM x PC2") +
+    theme(axis.title=element_text(size=14))
+
+
+
+
+vol.pc1.1 <- ggplot(meta.rare.abund.3, aes(Milk7d_T1, PC1)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("Yield x PC1") +
+    xlab("Mean Milk Volume (lbs/day)") +
+    theme(axis.title=element_text(size=14))
+
+vol.pc2.1 <- ggplot(meta.rare.abund.3, aes(Milk7d_T1, PC2)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("Yield x PC2") +
+    xlab("Mean Milk Yield (lbs/day)") +
+    theme(axis.title=element_text(size=14))
+
+
+lm_fit_Darkness.DIM <- lm(Darkness ~ DIM, data=meta.rare.abund.3)
+summary(lm_fit_Darkness.DIM)
+#0.0751 
+lm_fit_Darkness.MilkVol <- lm(Darkness ~ Milk7d_T1, data=meta.rare.abund.3)
+summary(lm_fit_Darkness.MilkVol)
+#Not significant
+
+
+lm_fit_DIM.PC1 <- lm(PC1 ~ DIM + Darkness, data=meta.rare.abund.3)
+summary(lm_fit_DIM.PC1)
+5#Not significant
+
+lm_fit_Milk7d_T1.PC1 <- lm(PC1 ~ Milk7d_T1 + Darkness, data=meta.rare.abund.3)
+summary(lm_fit_Milk7d_T1.PC1)
+#Not significant
+
+
+lm_fit_DIM.PC2 <- lm(PC2 ~ DIM + Darkness, data=meta.rare.abund.3)
+summary(lm_fit_DIM.PC2)
+#SIGNIFICANT!!! p < 0.00243
+
+lm_fit_Milk7d_T1.PC2 <- lm(PC2 ~ Milk7d_T1 + Darkness, data=meta.rare.abund.3)
+summary(lm_fit_Milk7d_T1.PC2)
+#SIGNIFICANT!!! p < 0.000513
+
+
+lm_fit_DIM.PC1 <- lm(PC1 ~ DIM, data=meta.rare.abund.3)
+summary(lm_fit_DIM.PC1)
+#Not significant
+
+lm_fit_Milk7d_T1.PC1 <- lm(PC1 ~ Milk7d_T1, data=meta.rare.abund.3)
+summary(lm_fit_Milk7d_T1.PC1)
+#Not significant
+
+
+lm_fit_DIM.PC2 <- lm(PC2 ~ DIM, data=meta.rare.abund.3)
+summary(lm_fit_DIM.PC2)
+#SIGNIFICANT!!! p < 0.00243
+
+lm_fit_Milk7d_T1.PC2 <- lm(PC2 ~ Milk7d_T1, data=meta.rare.abund.3)
+summary(lm_fit_Milk7d_T1.PC2)
+#SIGNIFICANT!!! p < 0.000513
+
+
+grid.arrange(dim.pc1.1, dim.pc2.1, vol.pc1.1, vol.pc2.1, top = "First Lactation", ncol = 2)
+
+ggarrange(dim.pc1.1, dim.pc2.1, vol.pc1.1, vol.pc2.1,
+          ncol=2,
+          nrow=2,
+          labels=c("A", "B", "C", "D"),
+          font.label=list(size=16))
+
+```
+
+
+##SECOND LACTATION Animals
+```{r}
+physeq.second <- subset_samples(physeq, PARITY == 2)
+
+Milk7d_T1 <- sample_data(physeq.second)$Milk7d_T1
+Milk7d_T1 <- Milk7d_T1[order(Milk7d_T1)]
+Milk7d_T1
+
+
+cutoff = round((0.2 * length(Milk7d_T1)), digits=0)
+
+#List is sorted from lowest to highest
+Milk7d_T1[cutoff]
+  # 71
+#Anything lower than 71 is considered Low Production
+
+Milk7d_T1[(length(Milk7d_T1) - cutoff)]
+  # 110
+#Anything higher than 110 is considered High Production
+
+sample_data(physeq.second)$Milk_Tier <- ifelse(sample_data(physeq.second)$Milk7d_T1 <= 71, "Low", ifelse(sample_data(physeq.second)$Milk7d_T1 >= 110, "High", "Mid"))
+
+
+rm(list=c("Milk7d_T1", "cutoff"))
+
+#Applying PCA to the centered log-ratio (CLR) transformed sequence counts
+ps_clr <- microbiome::transform(physeq.second, "clr")
+
+#PCA via phyloseq
+ord_clr <- phyloseq::ordinate(ps_clr, "RDA")
+
+#Plot scree plot
+phyloseq::plot_scree(ord_clr) +
+  geom_bar(stat="identity", fill="blue") +
+  labs(x = "\nAxis", y = "Proportion of Variance\n")
+
+#Examine eigenvalues and % proportional variance explained
+head(ord_clr$CA$eig)
+
+sapply(ord_clr$CA$eig[1:5], function(x) x / sum(ord_clr$CA$eig))     
+
+#Scale axes and plot ordination
+clr1 <- ord_clr$CA$eig[1] / sum(ord_clr$CA$eig)
+clr2 <- ord_clr$CA$eig[2] / sum(ord_clr$CA$eig)
+z_second <- phyloseq::plot_ordination(physeq.second, ord_clr, type="samples", color="Milk_Tier") + 
+  geom_point(size = 2)  +
+  coord_fixed() +  
+  ylim(-12,12) +
+  xlim(-12,12) +
+  stat_ellipse(aes(group = Milk_Tier), linetype = 2) +
+  guides(color = guide_legend(title = "Milk Volume")) +
+  ggtitle("Second Lactation PCA by Milk Volume Tier") +
+  scale_color_manual(values = okabe_ito_colors)
+
+z_second
+
+ordination_plot <- plot_ordination(physeq.second, ord_clr, type="samples", color="Milk_Tier")
+plot_data <- as.data.frame(ordination_plot$data)
+
+
+#Test for differences between groups
+#Generate distance matrix
+clr_dist_matrix <- phyloseq::distance(ps_clr, method = "euclidean") 
+#ADONIS test
+vegan::adonis2(clr_dist_matrix ~ sample_data(ps_clr)$Milk_Tier)
+#No significance
+
+
+
+#Pull out this PC1 column, combine with the GFE_Efficiency column, and then plot!
+meta.rare.second <- meta[meta$parity.group == "Second",]
+
+plot_data <- plot_data[order(row.names(plot_data)),]
+meta.rare.abund.2 <- meta.rare.second[order(row.names(meta.rare.second)),]
+
+plot_data_2 <- as.data.frame(plot_data[,1:2])
+row.names(plot_data_2) <- row.names(plot_data)
+colnames(plot_data_2)[1] <- "PC1"
+colnames(plot_data_2)[2] <- "PC2"
+
+meta.rare.abund.3 <- merge(meta.rare.abund.2, plot_data_2, by="row.names")
+row.names(meta.rare.abund.3) <- meta.rare.abund.3$Row.names
+
+
+meta.rare.abund.3$DIM <- as.numeric(meta.rare.abund.3$DIM)
+meta.rare.abund.3$Milk7d_T1 <- as.numeric(meta.rare.abund.3$Milk7d_T1)
+meta.rare.abund.3$Darkness <- as.numeric(meta.rare.abund.3$Darkness)
+
+
+##Linear modelling of GFE/RFI against PC1 axis for ALL ANIMALS
+dim.pc1.2 <- ggplot(meta.rare.abund.3, aes(DIM, PC1), geom_smooth(method="lm", se=FALSE)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("DIM x PC1")
+
+dim.pc2.2 <- ggplot(meta.rare.abund.3, aes(DIM, PC2), geom_smooth(method="lm", se=FALSE)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("DIM x PC2")
+
+
+
+
+vol.pc1.2 <- ggplot(meta.rare.abund.3, aes(Milk7d_T1, PC1)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("Yield x PC1") +
+    xlab("Mean Milk Yield (lbs/day)")
+
+vol.pc2.2 <- ggplot(meta.rare.abund.3, aes(Milk7d_T1, PC2)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("Yield x PC2") +
+    xlab("Mean Milk Yield (lbs/day)")
+
+
+lm_fit_Darkness.DIM <- lm(Darkness ~ DIM, data=meta.rare.abund.3)
+summary(lm_fit_Darkness.DIM)
+#Not significant
+lm_fit_Darkness.MilkVol <- lm(Darkness ~ Milk7d_T1, data=meta.rare.abund.3)
+summary(lm_fit_Darkness.MilkVol)
+#Not significant
+
+
+
+lm_fit_DIM.PC1 <- lm(PC1 ~ DIM, data=meta.rare.abund.3)
+summary(lm_fit_DIM.PC1)
+#Not significant
+
+lm_fit_Milk7d_T1.PC1 <- lm(PC1 ~ Milk7d_T1, data=meta.rare.abund.3)
+summary(lm_fit_Milk7d_T1.PC1)
+#Not significant
+
+
+
+lm_fit_DIM.PC2 <- lm(PC2 ~ DIM + Darkness, data=meta.rare.abund.3)
+summary(lm_fit_DIM.PC2)
+#Not significant
+
+lm_fit_Milk7d_T1.PC2 <- lm(PC2 ~ Milk7d_T1 + Darkness, data=meta.rare.abund.3)
+summary(lm_fit_Milk7d_T1.PC2)
+#Not significant
+
+grid.arrange(dim.pc1.2, dim.pc2.2, vol.pc1.2, vol.pc2.2, top = "Second Lactation", ncol = 2)
+
+```
+
+##THIRD LACTATION Animals
+```{r}
+physeq.third <- subset_samples(physeq, PARITY == 3)
+
+Milk7d_T1 <- sample_data(physeq.third)$Milk7d_T1
+Milk7d_T1 <- Milk7d_T1[order(Milk7d_T1)]
+Milk7d_T1
+
+cutoff = round((0.2 * length(Milk7d_T1)), digits=0)
+
+#List is sorted from lowest to highest
+Milk7d_T1[cutoff]
+  # 73.7
+#Anything lower than 74 is considered Low Production
+
+Milk7d_T1[(length(Milk7d_T1) - cutoff)]
+  # 112
+#Anything higher than 112 is considered High Production
+
+sample_data(physeq.third)$Milk_Tier <- ifelse(sample_data(physeq.third)$Milk7d_T1 <= 74, "Low", ifelse(sample_data(physeq.third)$Milk7d_T1 >= 112, "High", "Mid"))
+
+
+rm(list=c("Milk7d_T1", "cutoff"))
+
+#Applying PCA to the centered log-ratio (CLR) transformed sequence counts
+ps_clr <- microbiome::transform(physeq.third, "clr")
+
+#PCA via phyloseq
+ord_clr <- phyloseq::ordinate(ps_clr, "RDA")
+
+#Plot scree plot
+phyloseq::plot_scree(ord_clr) +
+  geom_bar(stat="identity", fill="blue") +
+  labs(x = "\nAxis", y = "Proportion of Variance\n")
+
+#Examine eigenvalues and % proportional variance explained
+head(ord_clr$CA$eig)
+
+sapply(ord_clr$CA$eig[1:5], function(x) x / sum(ord_clr$CA$eig))     
+
+#Scale axes and plot ordination
+clr1 <- ord_clr$CA$eig[1] / sum(ord_clr$CA$eig)
+clr2 <- ord_clr$CA$eig[2] / sum(ord_clr$CA$eig)
+z_third <- phyloseq::plot_ordination(physeq.third, ord_clr, type="samples", color="Milk_Tier") + 
+  geom_point(size = 2) +
+  coord_fixed() +  
+  ylim(-12,12) +
+  xlim(-12,12) +
+  stat_ellipse(aes(group = Milk_Tier), linetype = 2) +
+  guides(color = guide_legend(title = "Milk Volume")) +
+  ggtitle("Third Lactation PCA by Milk Volume Tier") +
+  scale_color_manual(values = okabe_ito_colors)
+
+z_third
+
+ordination_plot <- plot_ordination(physeq.third, ord_clr, type="samples", color="Milk_Tier")
+plot_data <- as.data.frame(ordination_plot$data)
+
+
+#Test for differences between groups
+#Generate distance matrix
+clr_dist_matrix <- phyloseq::distance(ps_clr, method = "euclidean") 
+#ADONIS test
+vegan::adonis2(clr_dist_matrix ~ sample_data(ps_clr)$Milk_Tier)
+#No significance
+
+
+
+#Pull out this PC1 column, combine with the GFE_Efficiency column, and then plot!
+meta.rare.third <- meta[meta$PARITY == " 3",]
+
+plot_data <- plot_data[order(row.names(plot_data)),]
+meta.rare.abund.2 <- meta.rare.third[order(row.names(meta.rare.third)),]
+
+plot_data_2 <- as.data.frame(plot_data[,1:2])
+row.names(plot_data_2) <- row.names(plot_data)
+colnames(plot_data_2)[1] <- "PC1"
+colnames(plot_data_2)[2] <- "PC2"
+
+meta.rare.abund.3 <- merge(meta.rare.abund.2, plot_data_2, by="row.names")
+row.names(meta.rare.abund.3) <- meta.rare.abund.3$Row.names
+
+
+meta.rare.abund.3$DIM <- as.numeric(meta.rare.abund.3$DIM)
+meta.rare.abund.3$Milk7d_T1 <- as.numeric(meta.rare.abund.3$Milk7d_T1)
+meta.rare.abund.3$Darkness <- as.numeric(meta.rare.abund.3$Darkness)
+
+
+##Linear modelling of GFE/RFI against PC1 axis for ALL ANIMALS
+dim.pc1.3 <- ggplot(meta.rare.abund.3, aes(DIM, PC1), geom_smooth(method="lm", se=FALSE)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("DIM x PC1")
+
+dim.pc2.3 <- ggplot(meta.rare.abund.3, aes(DIM, PC2), geom_smooth(method="lm", se=FALSE)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("DIM x PC2")
+
+
+
+
+vol.pc1.3 <- ggplot(meta.rare.abund.3, aes(Milk7d_T1, PC1)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("Yield x PC1") +
+    xlab("Mean Milk Yield (lbs/day)")
+
+vol.pc2.3 <- ggplot(meta.rare.abund.3, aes(Milk7d_T1, PC2)) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("Yield x PC2") +
+    xlab("Mean Milk Yield (lbs/day)")
+
+
+
+lm_fit_Darkness.DIM <- lm(Darkness ~ DIM, data=meta.rare.abund.3)
+summary(lm_fit_Darkness.DIM)
+#Not significant
+lm_fit_Darkness.MilkVol <- lm(Darkness ~ Milk7d_T1, data=meta.rare.abund.3)
+summary(lm_fit_Darkness.MilkVol)
+#Not significant
+
+
+
+lm_fit_DIM.PC1 <- lm(PC1 ~ DIM, data=meta.rare.abund.3)
+summary(lm_fit_DIM.PC1)
+#Not significant
+
+lm_fit_Milk7d_T1.PC1 <- lm(PC1 ~ Milk7d_T1, data=meta.rare.abund.3)
+summary(lm_fit_Milk7d_T1.PC1)
+#Not significant
+
+
+
+lm_fit_DIM.PC2 <- lm(PC2 ~ DIM, data=meta.rare.abund.3)
+summary(lm_fit_DIM.PC2)
+#Not significant
+
+lm_fit_Milk7d_T1.PC2 <- lm(PC2 ~ Milk7d_T1, data=meta.rare.abund.3)
+summary(lm_fit_Milk7d_T1.PC2)
+#Not significant
+
+grid.arrange(dim.pc1.3, dim.pc2.3, vol.pc1.3, vol.pc2.3, top = "Third Lactation", ncol = 2)
+
+grid.arrange(z_first, z_second, z_third, ncol=3)
+
+ggarrange(z_first, z_second, z_third,
+          nrow=1,
+          ncol=3,
+          labels=c("A", "B", "C"))
+
+```
+
+#Alpha Diveristy Analysis
+##Shannon
+```{r}
+physeq.swab1.abund <- subset_samples(physeq.swab1.abund, PARITY <= 3)
+
+sample_data(physeq.swab1.abund)$Milk_Tier <- factor(sample_data(physeq.swab1.abund)$Milk_Tier, levels = c("Low", "Mid", "High"))
+sample_data(physeq.swab1.abund)$Parity.Stage <- factor(sample_data(physeq.swab1.abund)$Parity.Stage, levels = c("First.Early", "First.Middle", "First.Late", "Second.Early", "Second.Middle", "Second.Late", "Third.Early", "Third.Middle", "Third.Late"))
+sample_data(physeq.swab1.abund)$STAGE <- factor(sample_data(physeq.swab1.abund)$STAGE, levels = c("Early", "Middle", "Late"))
+sample_data(physeq.swab1.abund)$parity.group <- factor(sample_data(physeq.swab1.abund)$parity.group, levels = c("First", "Second", "Third"))
+
+
+#None of the metrics are normally distributed. Using Kruskal-Wallis test, then testing pairwise with Wilcoxon Rank Sum test.
+kruskal.test(Shannon ~ Milk_Tier, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$Shannon, sample_data(physeq.swab1.abund)$Milk_Tier, p.adjust.method="fdr")
+#      Low  Mid 
+# Mid  0.58 -   
+# High 0.58 0.85
+
+b_p1 <- ggplot(sample_data(physeq.swab1.abund), aes(x=Milk_Tier, y=Shannon)) + 
+  geom_boxplot() +
+  labs(title=,x="Swab Milk Tiers", y = " Bacterial Shannon Diversity") + 
+  theme(axis.text=element_text(size=12)) +  
+  ylim(2.25, 7.5)
+b_p1
+
+
+#parity.stage
+kruskal.test(Shannon ~ Parity.Stage, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$Shannon, sample_data(physeq.swab1.abund)$Parity.Stage, p.adjust.method="fdr")
+#               First.Early First.Middle First.Late Second.Early Second.Middle Second.Late Third.Early Third.Middle
+# First.Middle  1.00        -            -          -            -             -           -           -           
+# First.Late    0.74        0.85         -          -            -             -           -           -           
+# Second.Early  0.23        0.74         0.74       -            -             -           -           -           
+# Second.Middle 0.74        0.74         0.74       0.23         -             -           -           -           
+# Second.Late   0.74        1.00         1.00       0.74         0.74          -           -           -           
+# Third.Early   0.83        0.79         0.74       0.23         1.00          0.74        -           -           
+# Third.Middle  0.79        0.89         0.74       0.23         0.83          0.74        1.00        -           
+# Third.Late    0.74        0.74         0.74       0.23         0.85          0.74        1.00        1.00 
+
+b_p2 <- ggplot(sample_data(physeq.swab1.abund), aes(x=Parity.Stage, y=Shannon)) + 
+  geom_boxplot() +
+  labs(x="", y = "Shannon Diversity") + 
+  theme(axis.text = element_text(size=17)) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  theme(axis.title = element_text(size=20))
+  
+b_p2
+
+
+
+#Stage
+kruskal.test(Shannon ~ STAGE, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$Shannon, sample_data(physeq.swab1.abund)$STAGE, p.adjust.method="fdr")
+#        Early Middle
+# Middle 0.94  -     
+# Late   0.94  0.94  
+
+b_p3 <- ggplot(sample_data(physeq.swab1.abund), aes(x=STAGE, y=Shannon)) + 
+  geom_boxplot() +
+  labs(title=,x="Swab Stages", y = "Bacterial Shannon Diversity") + 
+  theme(axis.text=element_text(size=12))
+b_p3
+
+
+#Lactation
+kruskal.test(Shannon ~ parity.group, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$Shannon, sample_data(physeq.swab1.abund)$parity.group, p.adjust.method="fdr")
+#        First Second
+# Second 0.98  -     
+# Multi  0.98  0.98
+
+
+b_p4 <- ggplot(sample_data(physeq.swab1.abund), aes(x=parity.group, y=Shannon)) + 
+  geom_boxplot() +
+  labs(title=,x="Swab Lactations", y = "Bacterial Shannon Diversity") + 
+  theme(axis.text=element_text(size=12))
+b_p4
+
+```
+
+##Correlating DIM and Milk Production to Shannon Scores
+```{r}
+physeq.swab1 <- subset_samples(physeq.swab1.abund, Swab_Rumen=="Swab")
+sample_data(physeq.swab1)$DIM <- as.numeric(sample_data(physeq.swab1)$DIM)
+sample_data(physeq.swab1)$Milk7d_T1 <- as.numeric(sample_data(physeq.swab1)$Milk7d_T1)
+
+
+b_p5 <- ggplot(sample_data(physeq.swab1), aes(x = DIM, y = Shannon)) +
+  geom_point() +  # Add points to the plot
+  geom_smooth(method = "lm", se = FALSE) +  # Add a line of best fit
+  labs(x = "Days in Milk", y = "Bacterial Shannon Diversity") +  # Add axis labels and title
+  theme_minimal()  # Optional: apply a minimal theme to the plot
+
+b_p5
+
+b_p6 <- ggplot(sample_data(physeq.swab1), aes(x = Milk7d_T1, y = Shannon)) +
+  geom_point() +  # Add points to the plot
+  geom_smooth(method = "lm", se = FALSE) +  # Add a line of best fit
+  labs(x = "Days in Milk", y = "Bacterial Shannon Diversity") +  # Add axis labels and title
+  theme_minimal()  # Optional: apply a minimal theme to the plot
+
+b_p6
+
+
+#Days in Milk
+cor.test(sample_data(physeq.swab1)$DIM, sample_data(physeq.swab1)$Shannon, method = "spearman", exact = FALSE)
+# data:  sample_data(physeq.swab1)$DIM and sample_data(physeq.swab1)$Shannon
+# S = 5069954, p-value = 0.5243
+# alternative hypothesis: true rho is not equal to 0
+# sample estimates:
+#       rho 
+# 0.0359527
+
+cor.test(sample_data(physeq.swab1)$DIM, sample_data(physeq.swab1)$Shannon, method = "kendall")
+# data:  sample_data(physeq.swab1)$DIM and sample_data(physeq.swab1)$Shannon
+# z = 0.68893, p-value = 0.4909
+# alternative hypothesis: true tau is not equal to 0
+# sample estimates:
+#        tau 
+# 0.02601743 
+
+
+#Milk Production
+cor.test(sample_data(physeq.swab1)$Milk7d_T1, sample_data(physeq.swab1)$Shannon, method = "spearman", exact = FALSE)
+# data:  sample_data(physeq.swab1)$Milk7d_T1 and sample_data(physeq.swab1)$Shannon
+# S = 5208373, p-value = 0.8646
+# alternative hypothesis: true rho is not equal to 0
+# sample estimates:
+#         rho 
+# 0.009632298
+
+cor.test(sample_data(physeq.swab1)$Milk7d_T1, sample_data(physeq.swab1)$Shannon, method = "kendall")
+# data:  sample_data(physeq.swab1)$Milk7d_T1 and sample_data(physeq.swab1)$Shannon
+# z = 0.17104, p-value = 0.8642
+# alternative hypothesis: true tau is not equal to 0
+# sample estimates:
+#         tau 
+# 0.006461819
+
+```
+
+
+##Inverse Simpson
+```{r}
+physeq.swab1.abund <- subset_samples(physeq.swab1.abund, PARITY <= 3)
+
+sample_data(physeq.swab1.abund)$Milk_Tier <- factor(sample_data(physeq.swab1.abund)$Milk_Tier, levels = c("Low", "Mid", "High"))
+sample_data(physeq.swab1.abund)$Parity.Stage <- factor(sample_data(physeq.swab1.abund)$Parity.Stage, levels = c("First.Early", "First.Middle", "First.Late", "Second.Early", "Second.Middle", "Second.Late", "Third.Early", "Third.Middle", "Third.Late"))
+sample_data(physeq.swab1.abund)$STAGE <- factor(sample_data(physeq.swab1.abund)$STAGE, levels = c("Early", "Middle", "Late"))
+sample_data(physeq.swab1.abund)$parity.group <- factor(sample_data(physeq.swab1.abund)$parity.group, levels = c("First", "Second", "Third"))
+
+
+#None of the metrics are normally distributed. Using Kruskal-Wallis test, then testing pairwise with Wilcoxon Rank Sum test.
+kruskal.test(InvSimpson ~ Milk_Tier, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$InvSimpson, sample_data(physeq.swab1.abund)$Milk_Tier, p.adjust.method="fdr")
+#      Low  Mid 
+# Mid  0.87 -   
+# High 0.87 0.87
+
+b_p7 <- ggplot(sample_data(physeq.swab1.abund), aes(x=Milk_Tier, y=InvSimpson)) + 
+  geom_boxplot() +
+  labs(title=,x="Swab Milk Tiers", y = " Bacterial InvSimpson Diversity") + 
+  theme(axis.text=element_text(size=12))
+b_p7
+
+
+#parity.stage
+kruskal.test(InvSimpson ~ Parity.Stage, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$InvSimpson, sample_data(physeq.swab1.abund)$Parity.Stage, p.adjust.method="fdr")
+#               First.Early First.Middle First.Late Second.Early Second.Middle Second.Late Multi.Early Multi.Middle
+# First.Middle  0.97        -            -          -            -             -           -           -           
+# First.Late    0.95        0.97         -          -            -             -           -           -           
+# Second.Early  0.60        0.84         0.93       -            -             -           -           -           
+# Second.Middle 0.67        0.84         0.60       0.40         -             -           -           -           
+# Second.Late   0.97        0.97         0.97       0.62         0.60          -           -           -           
+# Multi.Early   0.60        0.93         0.95       0.97         0.40          0.67        -           -           
+# Multi.Middle  0.97        0.97         0.97       0.60         0.60          0.97        0.60        -           
+# Multi.Late    0.97        0.97         0.95       0.60         0.60          0.97        0.62        0.97
+
+b_p8 <- ggplot(sample_data(physeq.swab1.abund), aes(x=Parity.Stage, y=InvSimpson)) + 
+  geom_boxplot() +
+  labs(title=,x="", y = "Inverse Simpson") + 
+  theme(axis.text = element_text(size=17)) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  theme(axis.title = element_text(size=20))
+b_p8
+
+
+
+#Stage
+kruskal.test(InvSimpson ~ STAGE, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$InvSimpson, sample_data(physeq.swab1.abund)$STAGE, p.adjust.method="fdr")
+#        Early Middle
+# Middle 0.20  -     
+# Late   0.46  0.46  
+
+b_p9 <- ggplot(sample_data(physeq.swab1.abund), aes(x=STAGE, y=InvSimpson)) + 
+  geom_boxplot() +
+  labs(title=,x="Swab Stages", y = "Bacterial InvSimpson Diversity") + 
+  theme(axis.text=element_text(size=12))
+b_p9
+
+
+#Lactation
+kruskal.test(InvSimpson ~ parity.group, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$InvSimpson, sample_data(physeq.swab1.abund)$parity.group, p.adjust.method="fdr")
+#        First Second
+# Second 0.98  -     
+# Multi  0.98  0.98
+
+
+b_p10 <- ggplot(sample_data(physeq.swab1.abund), aes(x=parity.group, y=InvSimpson)) + 
+  geom_boxplot() +
+  labs(title=,x="Swab Lactations", y = "Bacterial InvSimpson Diversity") + 
+  theme(axis.text=element_text(size=12))
+b_p10
+
+```
+
+##Correlating DIM and Milk Production to Inverse Simpson
+```{r}
+physeq.swab1 <- subset_samples(physeq.swab1.abund, Swab_Rumen=="Swab")
+sample_data(physeq.swab1)$DIM <- as.numeric(sample_data(physeq.swab1)$DIM)
+sample_data(physeq.swab1)$Milk7d_T1 <- as.numeric(sample_data(physeq.swab1)$Milk7d_T1)
+
+
+b_p11 <- ggplot(sample_data(physeq.swab1), aes(x = DIM, y = InvSimpson)) +
+  geom_point() +  # Add points to the plot
+  geom_smooth(method = "lm", se = FALSE) +  # Add a line of best fit
+  labs(x = "Days in Milk", y = "Bacterial InvSimpson Diversity") +  # Add axis labels and title
+  theme_minimal()  # Optional: apply a minimal theme to the plot
+
+b_p11
+
+b_p12 <- ggplot(sample_data(physeq.swab1), aes(x = Milk7d_T1, y = InvSimpson)) +
+  geom_point() +  # Add points to the plot
+  geom_smooth(method = "lm", se = FALSE) +  # Add a line of best fit
+  labs(x = "Days in Milk", y = "Bacterial InvSimpson Diversity") +  # Add axis labels and title
+  theme_minimal()  # Optional: apply a minimal theme to the plot
+
+b_p12
+
+
+#Days in Milk
+cor.test(sample_data(physeq.swab1)$DIM, sample_data(physeq.swab1)$InvSimpson, method = "spearman", exact = FALSE)
+# data:  sample_data(physeq.swab1)$DIM and sample_data(physeq.swab1)$InvSimpson
+# S = 4978202, p-value = 0.3441
+# alternative hypothesis: true rho is not equal to 0
+# sample estimates:
+#        rho 
+# 0.05339919
+
+cor.test(sample_data(physeq.swab1)$DIM, sample_data(physeq.swab1)$InvSimpson, method = "kendall")
+# data:  sample_data(physeq.swab1)$DIM and sample_data(physeq.swab1)$InvSimpson
+# z = 1.0065, p-value = 0.3142
+# alternative hypothesis: true tau is not equal to 0
+# sample estimates:
+#     tau 
+# 0.03801
+
+#Milk Production
+cor.test(sample_data(physeq.swab1)$Milk7d_T1, sample_data(physeq.swab1)$InvSimpson, method = "spearman", exact = FALSE)
+# data:  sample_data(physeq.swab1)$Milk7d_T1 and sample_data(physeq.swab1)$InvSimpson
+# S = 5454379, p-value = 0.5106
+# alternative hypothesis: true rho is not equal to 0
+# sample estimates:
+#         rho 
+# -0.03714544 
+
+cor.test(sample_data(physeq.swab1)$Milk7d_T1, sample_data(physeq.swab1)$InvSimpson, method = "kendall")
+# data:  sample_data(physeq.swab1)$Milk7d_T1 and sample_data(physeq.swab1)$InvSimpson
+# z = -0.67616, p-value = 0.4989
+# alternative hypothesis: true tau is not equal to 0
+# sample estimates:
+#         tau 
+# -0.02554532 
+
+```
+
+
+##Chao
+```{r}
+physeq.swab1.abund <- subset_samples(physeq.swab1.abund, PARITY <= 3)
+
+sample_data(physeq.swab1.abund)$Milk_Tier <- factor(sample_data(physeq.swab1.abund)$Milk_Tier, levels = c("Low", "Mid", "High"))
+sample_data(physeq.swab1.abund)$Parity.Stage <- factor(sample_data(physeq.swab1.abund)$Parity.Stage, levels = c("First.Early", "First.Middle", "First.Late", "Second.Early", "Second.Middle", "Second.Late", "Third.Early", "Third.Middle", "Third.Late"))
+sample_data(physeq.swab1.abund)$STAGE <- factor(sample_data(physeq.swab1.abund)$STAGE, levels = c("Early", "Middle", "Late"))
+sample_data(physeq.swab1.abund)$parity.group <- factor(sample_data(physeq.swab1.abund)$parity.group, levels = c("First", "Second", "Third"))
+
+
+#None of the metrics are normally distributed. Using Kruskal-Wallis test, then testing pairwise with Wilcoxon Rank Sum test.
+kruskal.test(InvSimpson ~ Chao1, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$Chao1, sample_data(physeq.swab1.abund)$Milk_Tier, p.adjust.method="fdr")
+#      Low  Mid 
+# Mid  0.87 -   
+# High 0.87 0.87
+
+b_p13 <- ggplot(sample_data(physeq.swab1.abund), aes(x=Milk_Tier, y=Chao1)) + 
+  geom_boxplot() +
+  labs(title=,x="Swab Milk Tiers", y = " Bacterial Chao1 Diversity") + 
+  theme(axis.text=element_text(size=12))
+b_p13
+
+
+#parity.stage
+kruskal.test(Chao1 ~ Parity.Stage, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$Chao1, sample_data(physeq.swab1.abund)$Parity.Stage, p.adjust.method="fdr")
+#               First.Early First.Middle First.Late Second.Early Second.Middle Second.Late Multi.Early Multi.Middle
+# First.Middle  0.90        -            -          -            -             -           -           -           
+# First.Late    0.90        0.90         -          -            -             -           -           -           
+# Second.Early  0.87        0.88         0.87       -            -             -           -           -           
+# Second.Middle 0.87        0.87         0.90       0.59         -             -           -           -           
+# Second.Late   0.99        0.90         0.90       0.87         0.87          -           -           -           
+# Multi.Early   0.93        0.90         0.90       0.87         0.87          0.96        -           -           
+# Multi.Middle  0.87        0.87         0.93       0.59         0.90          0.87        0.87        -           
+# Multi.Late    0.90        0.87         0.90       0.59         0.90          0.87        0.87        0.99
+
+b_p14 <- ggplot(sample_data(physeq.swab1.abund), aes(x=Parity.Stage, y=Chao1)) + 
+  geom_boxplot() +
+  labs(x="", y = "Chao Richness") + 
+  theme(axis.text = element_text(size=17)) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  theme(axis.title = element_text(size=20))
+b_p14
+
+
+
+#Stage
+kruskal.test(Chao1 ~ STAGE, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$Chao1, sample_data(physeq.swab1.abund)$STAGE, p.adjust.method="fdr")
+#        Early Middle
+# Middle 0.24  -     
+# Late   0.24  0.79  
+
+b_p15 <- ggplot(sample_data(physeq.swab1.abund), aes(x=STAGE, y=Chao1)) + 
+  geom_boxplot() +
+  labs(title=,x="Swab Stages", y = "Bacterial Chao1 Diversity") + 
+  theme(axis.text=element_text(size=12))
+b_p15
+
+
+#Lactation
+kruskal.test(Chao1 ~ parity.group, data=as.matrix(sample_data(physeq.swab1.abund)))
+# pvalue > 0.05, NO sig difference
+pairwise.wilcox.test(sample_data(physeq.swab1.abund)$Chao1, sample_data(physeq.swab1.abund)$parity.group, p.adjust.method="fdr")
+#        First Second
+# Second 0.98  -     
+# Multi  0.98  0.98
+
+
+b_p16 <- ggplot(sample_data(physeq.swab1.abund), aes(x=parity.group, y=Chao1)) + 
+  geom_boxplot() +
+  labs(title=,x="Swab Lactations", y = "Bacterial Chao1 Diversity") + 
+  theme(axis.text=element_text(size=12))
+b_p16
+
+```
+
+##Correlating DIM and Milk Production to Chao
+```{r}
+physeq.swab1 <- subset_samples(physeq.swab1.abund, Swab_Rumen=="Swab")
+sample_data(physeq.swab1)$DIM <- as.numeric(sample_data(physeq.swab1)$DIM)
+sample_data(physeq.swab1)$Milk7d_T1 <- as.numeric(sample_data(physeq.swab1)$Milk7d_T1)
+
+
+b_p17 <- ggplot(sample_data(physeq.swab1), aes(x = DIM, y = Chao1)) +
+  geom_point() +  # Add points to the plot
+  geom_smooth(method = "lm", se = FALSE) +  # Add a line of best fit
+  labs(x = "Days in Milk", y = "Bacterial Chao1 Diversity") +  # Add axis labels and title
+  theme_minimal()  # Optional: apply a minimal theme to the plot
+
+b_p17
+
+b_p18 <- ggplot(sample_data(physeq.swab1), aes(x = Milk7d_T1, y = Chao1)) +
+  geom_point() +  # Add points to the plot
+  geom_smooth(method = "lm", se = FALSE) +  # Add a line of best fit
+  labs(x = "Days in Milk", y = "Bacterial Chao1 Diversity") +  # Add axis labels and title
+  theme_minimal()  # Optional: apply a minimal theme to the plot
+
+b_p18
+
+
+#Days in Milk
+cor.test(sample_data(physeq.swab1)$DIM, sample_data(physeq.swab1)$Chao1, method = "spearman", exact = FALSE)
+# data:  sample_data(physeq.swab1)$DIM and sample_data(physeq.swab1)$Chao1
+# S = 4935546, p-value = 0.2757
+# alternative hypothesis: true rho is not equal to 0
+# sample estimates:
+#        rho 
+# 0.06151015 
+
+cor.test(sample_data(physeq.swab1)$DIM, sample_data(physeq.swab1)$Chao1, method = "kendall")
+# data:  sample_data(physeq.swab1)$DIM and sample_data(physeq.swab1)$Chao1
+# z = 1.1104, p-value = 0.2668
+# alternative hypothesis: true tau is not equal to 0
+# sample estimates:
+#        tau 
+# 0.04193416
+
+#Milk Production
+cor.test(sample_data(physeq.swab1)$Milk7d_T1, sample_data(physeq.swab1)$Chao1, method = "spearman", exact = FALSE)
+# data:  sample_data(physeq.swab1)$Milk7d_T1 and sample_data(physeq.swab1)$Chao1
+# S = 5057490, p-value = 0.4973
+# alternative hypothesis: true rho is not equal to 0
+# sample estimates:
+#        rho 
+# 0.03832269 
+
+cor.test(sample_data(physeq.swab1)$Milk7d_T1, sample_data(physeq.swab1)$Chao1, method = "kendall")
+# data:  sample_data(physeq.swab1)$Milk7d_T1 and sample_data(physeq.swab1)$Chao1
+# z = 0.75874, p-value = 0.448
+# alternative hypothesis: true tau is not equal to 0
+# sample estimates:
+#       tau 
+# 0.0286658
+
+```
+
+#Creating plot that has parity.stage comparisons for alpha diversities
+```{r}
+grid.arrange(b_p2, b_p8, b_p14, ncol = 3)
+
+ggarrange(b_p2, b_p8, b_p14,
+          nrow=1,
+          ncol=3,
+          labels=c("A", "B", "C"))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,666 @@
+---
+title: "Second Lactation Alpha Diversity, Linear Modelling, and DESeq2 Analysis of GFE and RFI"
+author: "Joseph Skarlupka V"
+date: "2024-10-31"
+output: html_document
+---
+
+#Loading Libraries
+```{r, Libraries}
+library("ggplot2")
+library("phyloseq")
+library("vegan")
+library("DESeq2")
+library("reltools")
+library("phylosmith")
+
+set.seed(81471438)
+```
+
+#Importing files of interest
+```{r, import the files of interest}
+#Load in the phyloseq object that contains
+  #Time point 1
+  #Swabs only
+  #Only with MPE information
+  #7000 sequences
+  #2nd Lactation Arlington Animals
+
+load("Second Lactation RFI and GFE Animals.RData")
+
+```
+
+#Changing values to integers as needed
+```{r}
+#A lot of the work I did ended up changing the class of some rows from integers to characters. Making the necessary changes back to integers here
+
+sample_data(physeq)$rfi_recent <- as.numeric(sample_data(physeq)$rfi_recent)
+
+
+```
+
+
+#RFI - Overwrite the rfi_Efficiency column to reflect the top and bottom 20% animals of only the first lactation
+```{r}
+RFI_List <- sample_data(physeq)$rfi_recent
+RFI_List <- RFI_List[order(RFI_List)]
+RFI_List
+
+cutoff = round((0.2 * length(RFI_List)), digits=0)
+
+#List is sorted from lowest to highest
+RFI_List[cutoff]
+  # -1.9
+#Anything lower than -1.9 is considered HE
+
+RFI_List[(length(RFI_List) - cutoff)]
+  # 0.9
+#Anything higher than 0.9 is considered LE
+
+sample_data(physeq)$rfi_Efficiency <- ifelse(sample_data(physeq)$rfi_recent <= -1.9, "HE", ifelse(sample_data(physeq)$rfi_recent >= 0.9, "LE", "MID"))
+
+sample_data(physeq)$Sample.Type_RFI.Efficiency <- paste0(sample_data(physeq)$Sample.Type, "_", sample_data(physeq)$rfi_Efficiency)
+table(sample_data(physeq)$Sample.Type_RFI.Efficiency)
+
+rm(list=c("RFI_List", "cutoff"))
+
+
+```
+
+
+
+#GFE - Split in top and bottom 20%
+```{r, Split Animals into 20% HE and LE groups for GFE}
+#Applying HE and LE values to meta based on GFE
+
+# Take the highest 20% of GFEs, and classify those as high efficiency
+# Take the lowest 20% of GFEs, and classify those as low efficiency
+# Classify the rest as mid efficiency
+
+GFEs <- data.frame(sample_data(physeq)$Cow, sample_data(physeq)$GFE)
+
+GFE_List <- as.numeric(GFEs$sample_data.physeq..GFE)
+GFE_List <- GFE_List[order(GFE_List)]
+GFE_List
+
+cutoff = round((0.2 * length(GFE_List)), digits=0)
+
+#List is sorted from lowest to highest
+GFE_List[cutoff]
+  # 1.0714286 
+#Anything lower than 1.0714286  is considered LE
+
+GFE_List[(length(GFE_List) - cutoff)]
+  # 1.2000000
+#Anything higher than 1.2000000 is considered HE
+
+sample_data(physeq)$gfe_20percent <- ifelse(sample_data(physeq)$GFE <= 1.0714286 , "LE", ifelse(sample_data(physeq)$GFE >= 1.2000000, "HE", "MID"))
+
+sample_data(physeq)$Sample.Type_GFE.Efficiency <- paste0(sample_data(physeq)$Sample.Type, "_", sample_data(physeq)$gfe_20percent)
+
+table(sample_data(physeq)$Sample.Type_GFE.Efficiency)
+ # Swab_HE  Swab_LE Swab_MID 
+ #       6        6       12
+
+rm(list=c("GFEs", "GFE_List", "cutoff"))
+
+
+```
+
+#Rarefying the phyloseq object
+```{r}
+rowSums(otu_table(physeq))
+
+#Rarefying
+physeq.swab1.rare <- rarefy_even_depth(physeq, sample.size=7000)
+table(sample_data(physeq.swab1.rare)$parity.group)
+table(sample_data(physeq.swab1.rare)$Sample.Type_GFE.Efficiency)
+table(sample_data(physeq.swab1.rare)$Sample.Type_RFI.Efficiency)
+
+#7000 - 30 samples removed
+
+tab <- otu_table(physeq.swab1.rare)
+class(tab) <- "matrix"
+rarecurve(tab, step=50, cex=0.5, xlim=c(0,15000), ylim=c(0,2000))
+rm(tab)
+
+#Pulling back out the rarefied ASV table with new column names
+ASV1 = as(otu_table(physeq.swab1.rare), "matrix")
+if(taxa_are_rows(physeq.swab1.rare)){ASV1 <- t(ASV1)}
+# Coerce to data.frame
+ASV.7000 = as.data.frame(ASV1)
+rm(ASV1)
+
+
+#Pulling back out the metadata table with new column names
+meta.7000 = as(sample_data(physeq.swab1.rare), "matrix")
+# Coerce to data.frame
+meta.7000 = as.data.frame(meta.7000)
+
+
+#Pulling out new taxonomy file
+tax.7000 = as(tax_table(physeq.swab1.rare), "matrix")
+tax.7000 = as.data.frame(tax.7000)
+
+```
+
+
+##Abundance Cutoff of Phyloseq Object
+```{r}
+#Removing ASVs from which there are no samples with more than 10 sequences
+physeq.swab1.abund <- prune_taxa(taxa_sums(physeq.swab1.rare)>10,physeq.swab1.rare)
+
+
+```
+
+##Pulling out the ASV, Meta, and Taxonomy of the rarefied and abundance cutoff phyloseq object
+```{r}
+#Pulling back out the rarefied ASV table with new column names
+ASV1 = as(otu_table(physeq.swab1.abund), "matrix")
+if(taxa_are_rows(physeq.swab1.abund)){ASV1 <- t(ASV1)}
+# Coerce to data.frame
+ASV.rare.abund = as.data.frame(ASV1)
+rm(ASV1)
+
+
+#Pulling back out the metadata table with new column names
+meta.rare.abund = as(sample_data(physeq.swab1.abund), "matrix")
+# Coerce to data.frame
+meta.rare.abund = as.data.frame(meta.rare.abund)
+
+
+#Pulling out new taxonomy file
+tax.rare.abund = as(tax_table(physeq.swab1.abund), "matrix")
+tax.rare.abund = as.data.frame(tax.rare.abund)
+
+```
+
+
+##Creating a phyloseq object of that includes an abundance cutoff, but no rarefaction
+```{r}
+#Removing ASVs from which there are no samples with more than 10 sequences
+
+physeq.norare.abund <- prune_taxa(taxa_sums(physeq)>10,physeq)
+
+
+```
+
+
+##Adding alpha diversity metrics in phyloseq
+```{r, adding alpha diversity metrics in phyloseq, then pulling out the component tables again so I can do some work in vegan}
+#putting all metrics into a file
+div <- phyloseq::estimate_richness(physeq.swab1.abund, measures=c("Observed", "Chao1", "ACE", "Shannon", "InvSimpson", "Simpson"))
+row.names(div) <- gsub(".", "-", row.names(div), fixed=TRUE)
+physeq.swab1.abund <- merge_phyloseq(physeq.swab1.abund, sample_data(div))
+
+rm(list=c("div"))
+
+```
+
+
+#Exploring Alpha Diversity for GFE and RFI
+```{r, Exploring alpha diversity of the efficiency groups when split into top and bottom 20% by GFE}
+plot_richness(physeq.swab1.abund, "gfe_20percent", measures="Shannon")
+
+#Testing normality
+shapiro.test(sample_data(physeq.swab1.abund)$Shannon)
+#W = 0.96688, p-value = 0.5908
+shapiro.test(sample_data(physeq.swab1.abund)$Chao1)
+#W = 0.96126, p-value = 0.4642
+shapiro.test(sample_data(physeq.swab1.abund)$ACE)
+#W = 0.96249, p-value = 0.4905
+shapiro.test(sample_data(physeq.swab1.abund)$Simpson)
+#W = 0.90973, p-value = 0.0348
+shapiro.test(sample_data(physeq.swab1.abund)$InvSimpson)
+#W = 0.84416, p-value = 0.001707
+shapiro.test(sample_data(physeq.swab1.abund)$Observed)
+#W = 0.95515, p-value = 0.3489
+
+par(mfrow=c(2,3))
+
+
+#None of the metrics are normally distributed. Using Kruskal-Wallis test, then testing pairwise with Wilcoxon Rank Sum test.
+#The RFI and GFE labels of HE/LE/Mid are categorical
+##GFE
+
+#SHANNON
+aov.shannon.gfe <- aov(Shannon ~ gfe_20percent, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.shannon.gfe)
+#               Df Sum Sq Mean Sq F value Pr(>F)  
+# gfe_20percent  2  4.609  2.3045   5.629  0.011 *
+# Residuals     21  8.597  0.4094
+TukeyHSD(aov.shannon.gfe)
+# $gfe_20percent
+#               diff        lwr         upr     p adj
+# LE-HE  -0.94268333 -1.8738149 -0.01155172 0.0468818
+# MID-HE  0.09773617 -0.7086475  0.90411980 0.9499753
+# MID-LE  1.04041950  0.2340359  1.84680313 0.0102100
+
+    #DOES TUBE COLOR AFFECT THE MODEL?
+aov.shannon.gfe.tube = aov(Shannon ~ gfe_20percent*Tube.Color, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.shannon.gfe.tube)
+  #                          Df Sum Sq Mean Slq F value Pr(>F)  
+  # gfe_20percent             2  4.362  2.1809   5.778 0.0148 *
+  # Tube.Color                3  1.502  0.5007   1.327 0.3053  
+  # gfe_20percent:Tube.Color  3  1.056  0.3520   0.933 0.4509  
+  # Residuals                14  5.284  0.3774
+    #NO IT DOESN'T
+aov.shannon.gfe.tube = aov(Shannon ~ gfe_20percent+Tube.Color, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.shannon.gfe.tube)
+  #               Df Sum Sq Mean Sq F value Pr(>F)  
+  # gfe_20percent  2  4.362  2.1809   5.848 0.0117 *
+  # Tube.Color     3  1.502  0.5007   1.343 0.2937  
+  # Residuals     17  6.340  0.3729                 
+
+#CHAO
+aov.chao.gfe <- aov(Chao1 ~ gfe_20percent, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.chao.gfe)
+# p >0.05, no difference
+TukeyHSD(aov.chao.gfe)
+
+
+#ACE
+aov.ACE.gfe <- aov(ACE ~ gfe_20percent, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.ACE.gfe)
+# p >0.05, no difference
+
+#SIMPSON
+kruskal.test(Simpson ~ gfe_20percent, data=as.matrix(sample_data(physeq.swab1.abund)))
+# p >0.05, no difference
+
+#INVSIMPSON
+kruskal.test(InvSimpson ~ gfe_20percent, data=as.matrix(sample_data(physeq.swab1.abund)))
+# p >0.05, no difference
+
+#OBSERVED
+aov.observed.gfe <- aov(Observed ~ gfe_20percent, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.observed.gfe)
+#               Df Sum Sq Mean Sq F value Pr(>F)  
+# gfe_20percent  2 180099   90049    3.81 0.0388 *
+# Residuals     21 496376   23637  
+TukeyHSD(aov.observed.gfe)
+# $gfe_20percent
+#              diff         lwr       upr     p adj
+# LE-HE  -192.33333 -416.068403  31.40174 0.1005951
+# MID-HE   11.16667 -182.593587 204.92692 0.9884404
+# MID-LE  203.50000    9.739746 397.26025 0.0384291
+    
+    #DOES TUBE COLOR AFFECT THE MODEL?
+aov.observed.gfe.tube = aov(Observed ~ gfe_20percent*Tube.Color, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.observed.gfe.tube)
+    #                          Df Sum Sq Mean Sq F value Pr(>F)  
+    # gfe_20percent             2 165680   82840   3.992 0.0425 *
+    # Tube.Color                3  64960   21653   1.043 0.4039  
+    # gfe_20percent:Tube.Color  3  53834   17945   0.865 0.4823  
+    # Residuals                14 290534   20752    
+
+#NO IT DOESN'T
+
+aov.observed.gfe.tube = aov(Observed ~ gfe_20percent+Tube.Color, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.observed.gfe.tube)
+    #               Df Sum Sq Mean Sq F value Pr(>F)  
+    # gfe_20percent  2 165680   82840   4.089 0.0355 *
+    # Tube.Color     3  64960   21653   1.069 0.3884  
+    # Residuals     17 344367   20257                 
+
+
+boxplot(as.numeric(Shannon) ~ gfe_20percent, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="Shannon diversity")
+boxplot(as.numeric(Chao1) ~ gfe_20percent, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="Chao1 Richness")
+boxplot(as.numeric(ACE) ~ gfe_20percent, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="ACE")
+boxplot(as.numeric(Simpson) ~ gfe_20percent, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="Simpson")
+boxplot(as.numeric(InvSimpson) ~ gfe_20percent, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="InvSimpson")
+boxplot(as.numeric(Observed) ~ gfe_20percent, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="Observed")
+
+p1.2 <- ggplot(sample_data(physeq.swab1.abund), aes(x=gfe_20percent, y=Shannon)) + 
+  geom_boxplot() +
+  labs(x="GFE Groups", y = "Shannon Diversity") +
+  scale_x_discrete(limits = c("LE", "HE", "MID"))
+p1.2
+
+p2.2 <- ggplot(sample_data(physeq.swab1.abund), aes(x=gfe_20percent, y=Chao1)) + 
+  geom_boxplot() +
+  labs(x="GFE Groups", y = "Chao Richness") +
+  scale_x_discrete(limits = c("LE", "HE", "MID")) 
+p2.2
+
+p3.2 <- ggplot(sample_data(physeq.swab1.abund), aes(x=gfe_20percent, y=InvSimpson)) + 
+  geom_boxplot() +
+  labs(x="GFE Groups", y = "Inverse Simpson") +
+  scale_x_discrete(limits = c("LE", "HE", "MID")) 
+p3.2
+
+
+rfi_Efficiency
+##RFI
+aov.shannon.rfi <- aov(Shannon ~ rfi_Efficiency, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.shannon.rfi)
+# p = 0.0461, Significant difference
+TukeyHSD(aov.shannon.rfi)
+    #               diff        lwr         upr     p adj
+    # LE-HE   0.93644740 -0.1554715  2.02836627 0.1015737
+    # MID-HE  0.02196899 -0.8775041  0.92144204 0.9979129
+    # MID-LE -0.91447841 -1.8139515 -0.01500536 0.0458486
+aov.shannon.rfi.tube = aov(Shannon ~ rfi_Efficiency*Tube.Color, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.shannon.rfi.tube)
+    #                           Df Sum Sq Mean Sq F value Pr(>F)  
+    # rfi_Efficiency             2  4.116  2.0580   5.270 0.0197 *
+    # Tube.Color                 3  1.262  0.4208   1.078 0.3905  
+    # rfi_Efficiency:Tube.Color  3  1.359  0.4529   1.160 0.3599  
+    # Residuals                 14  5.467  0.3905    
+
+#NO IT DOESN'T
+
+aov.shannon.rfi.tube = aov(Shannon ~ rfi_Efficiency+Tube.Color, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.shannon.rfi.tube)
+  #                Df Sum Sq Mean Sq F value Pr(>F)  
+  # rfi_Efficiency  2  3.334  1.6669   3.523 0.0512 .
+  # Tube.Color      3  1.327  0.4422   0.934 0.4445  
+  # Residuals      18  8.518  0.4732                 
+
+
+aov.chao.rfi <- aov(Chao1 ~ rfi_Efficiency, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.chao.rfi)
+# p > 0.05, No difference
+aov.ACE.rfi <- aov(ACE ~ rfi_Efficiency, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.ACE.rfi)
+# p >0.05, no difference
+kruskal.test(Simpson ~ rfi_Efficiency, data=as.matrix(sample_data(physeq.swab1.abund)))
+# p >0.05, no difference
+kruskal.test(InvSimpson ~ rfi_Efficiency, data=as.matrix(sample_data(physeq.swab1.abund)))
+# p = 0.05698 
+kruskal.test(InvSimpson ~ Tube.Color, data=as.matrix(sample_data(physeq.swab1.abund)))
+
+aov.observed.rfi <- aov(Observed ~ rfi_Efficiency, data=as.data.frame(as.matrix(sample_data(physeq.swab1.abund))))
+summary(aov.observed.rfi)
+# p >0.05, no difference
+
+boxplot(as.numeric(Shannon) ~ rfi_Efficiency, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="Shannon diversity")
+boxplot(as.numeric(Chao1) ~ rfi_Efficiency, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="Chao1 Richness")
+boxplot(as.numeric(ACE) ~ rfi_Efficiency, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="ACE")
+boxplot(as.numeric(Simpson) ~ rfi_Efficiency, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="Simpson")
+boxplot(as.numeric(InvSimpson) ~ rfi_Efficiency, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="InvSimpson")
+boxplot(as.numeric(Observed) ~ rfi_Efficiency, data=as.matrix(sample_data(physeq.swab1.abund)), ylab="Observed")
+
+p4.2 <- ggplot(sample_data(physeq.swab1.abund), aes(x=rfi_Efficiency, y=Shannon)) + 
+  geom_boxplot() +
+  labs(x="RFI Groups", y = "Shannon Diversity") +
+  scale_x_discrete(limits = c("LE", "HE", "MID"))
+p4.2
+
+p5.2 <- ggplot(sample_data(physeq.swab1.abund), aes(x=rfi_Efficiency, y=Chao1)) + 
+  geom_boxplot() +
+  labs(x="RFI Groups", y = "Chao Richness") +
+  scale_x_discrete(limits = c("LE", "HE", "MID")) 
+p5.2
+
+p6.2 <- ggplot(sample_data(physeq.swab1.abund), aes(x=rfi_Efficiency, y=InvSimpson)) + 
+  geom_boxplot() +
+  labs(x="RFI Groups", y = "Inverse Simpson") +
+  scale_x_discrete(limits = c("LE", "HE", "MID")) 
+p6.2
+
+grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 3, top="Alpha Diversities of Second Lactation")
+
+
+```
+
+
+#Pulling out the ASV table from the phyloseq object that has had abundance cutoff but has NOT been rarefied
+```{r}
+#Pulling out the rarefied ASV table fropm the phyloseq object that has been rarefied and has had abundance cutoff done
+  #This is the same dataset that the DESeq2 work was done on
+
+ASV.norare.abund = as(otu_table(physeq.norare.abund), "matrix")
+if(taxa_are_rows(physeq.norare.abund)){ASV.norare.abund <- t(ASV.norare.abund)}
+# Coerce to data.frame
+ASV.norare.abund = as.data.frame(ASV.norare.abund)
+
+#Pulling back out the metadata table with new column names
+meta.norare.abund = as(sample_data(physeq.norare.abund), "matrix")
+# Coerce to data.frame
+meta.norare.abund = as.data.frame(meta.norare.abund)
+
+
+#Pulling out new taxonomy file
+tax.norare.abund = as(tax_table(physeq.norare.abund), "matrix")
+tax.norare.abund = as.data.frame(tax.norare.abund)
+
+```
+
+#Testing if distribution of numbers for tube colors is different between high and low efficiency animals.
+```{r}
+#Using kruskal-wallace test
+kruskal.test(as.numeric(meta.norare.abund$Tube.Color) ~ gfe_20percent, data=meta.norare.abund)
+#p-value = 0.4822
+#No significant difference
+pairwise.wilcox.test(as.numeric(meta.norare.abund$Tube.Color), meta.norare.abund$gfe_20percent, p.adjust.method="fdr")
+#No difference
+
+kruskal.test(as.numeric(meta.norare.abund$Tube.Color) ~ rfi_Efficiency, data=meta.norare.abund)
+#p-value = 0.7042
+#No significant difference
+pairwise.wilcox.test(as.numeric(meta.norare.abund$Tube.Color), meta.norare.abund$rfi_Efficiency, p.adjust.method="fdr")
+#No difference
+
+```
+
+
+##Testing diff abundance for GFE
+```{r, Differential abundance testing with DESeq2}
+
+
+#Using the GFE Efficiency Label
+sample_data(physeq.norare.abund)$gfe_20percent <- as.factor(sample_data(physeq.norare.abund)$gfe_20percent)
+
+ds = phyloseq_to_deseq2(physeq.norare.abund, ~ gfe_20percent)
+
+ds = DESeq(ds)
+
+alpha = 0.05
+res = results(ds, contrast=c("gfe_20percent", "HE", "LE"), alpha=alpha)
+res = res[order(res$padj, na.last=NA), ]
+res_sig = res[(res$padj < alpha), ]
+res_sig$Comp <- "GFE"
+res_sig
+
+res_sig = cbind(as(res_sig, "data.frame"), as(tax_table(physeq.norare.abund)[rownames(res_sig), ], "matrix"))
+ggplot(res_sig, aes(x=Genus, y=log2FoldChange, color=Phylum)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +
+    ggtitle("DESeq2 Second Lactation GFE High vs Low")
+
+par(mfrow=c(1,1))
+
+```
+
+##Testing diff abundance for RFI
+```{r}
+#Using the RFI Efficiency Label
+sample_data(physeq.norare.abund)$rfi_Efficiency <- as.factor(sample_data(physeq.norare.abund)$rfi_Efficiency)
+
+ds.rfi = phyloseq_to_deseq2(physeq.norare.abund, ~ rfi_Efficiency)
+ds.rfi = DESeq(ds.rfi)
+
+alpha = 0.05
+res.rfi = results(ds.rfi, contrast=c("rfi_Efficiency", "HE", "LE"), alpha=alpha)
+res.rfi = res.rfi[order(res.rfi$padj, na.last=NA), ]
+res_sig.rfi = res.rfi[(res.rfi$padj < alpha), ]
+res_sig.rfi
+res_sig.rfi$Comp <- "RFI"
+
+res_sig.rfi = cbind(as(res_sig.rfi, "data.frame"), as(tax_table(physeq.norare.abund)[rownames(res_sig.rfi), ], "matrix"))
+ggplot2::ggplot(res_sig.rfi, aes(x=Genus, y=log2FoldChange, color=Phylum)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +
+    ggtitle("DESeq2 Second Lactation RFI High vs Low")
+
+
+#We have ASVs of interest. Will take them and compare relative abundance of them.
+
+```
+
+
+```{r}
+DESeq_Results <- rbind(res_sig, res_sig.rfi)
+
+write.csv(DESeq_Results, file="DESeq2 Results for GFE and RFI Groups.csv")
+```
+
+
+#Linear Modelling with CLR
+```{r}
+meta.second <- as.matrix(sample_data(physeq))
+meta.second <- as.data.frame(meta.second)
+
+#Applying PCA to the centered log-ratio (CLR) transformed sequence counts
+ps_clr <- microbiome::transform(physeq, "clr")
+
+#PCA via phyloseq
+ord_clr <- phyloseq::ordinate(ps_clr, "RDA")
+
+#Plot scree plot
+phyloseq::plot_scree(ord_clr) +
+  geom_bar(stat="identity", fill="blue") +
+  labs(x = "\nAxis", y = "Proportion of Variance\n")
+
+#Examine eigenvalues and % proportional variance explained
+head(ord_clr$CA$eig)
+
+sapply(ord_clr$CA$eig[1:5], function(x) x / sum(ord_clr$CA$eig))     
+
+#Scale axes and plot ordination
+clr1 <- ord_clr$CA$eig[1] / sum(ord_clr$CA$eig)
+clr2 <- ord_clr$CA$eig[2] / sum(ord_clr$CA$eig)
+z_second_rfi <- phyloseq::plot_ordination(physeq, ord_clr, type="samples", color="rfi_Efficiency") + 
+  geom_point(size = 2) +
+  coord_fixed() +  
+  ylim(-20,20) +
+  xlim(-20,20) +
+  stat_ellipse(aes(group = rfi_Efficiency), linetype = 2) +
+  ggtitle("Second Lactation PCA by RFI") +
+  guides(color = guide_legend(title = "RFI Group")) +
+  scale_color_manual(values = okabe_ito_colors)
+
+z_second_rfi
+
+z_second_gfe <- phyloseq::plot_ordination(physeq, ord_clr, type="samples", color="gfe_20percent") + 
+  geom_point(size = 2) +
+  coord_fixed() +  
+  ylim(-20,20) +
+  xlim(-20,20) +
+  stat_ellipse(aes(group = gfe_20percent), linetype = 2) +
+  ggtitle("Second Lactation PCA by GFE") +
+  guides(color = guide_legend(title = "GFE Group")) +
+  scale_color_manual(values = okabe_ito_colors)
+
+z_second_gfe
+
+
+ordination_plot <- plot_ordination(physeq, ord_clr, type="samples", color="rfi_Efficiency")
+plot_data <- as.data.frame(ordination_plot$data)
+
+
+#Test for differences between groups
+#Generate distance matrix
+clr_dist_matrix <- phyloseq::distance(ps_clr, method = "euclidean") 
+#ADONIS test
+vegan::adonis2(clr_dist_matrix ~ sample_data(ps_clr)$rfi_Efficiency)
+#No significance
+vegan::adonis2(clr_dist_matrix ~ sample_data(ps_clr)$gfe_20percent)
+#Trending p = 0.093
+
+
+#Pull out this PC1 column, combine with the GFE_Efficiency column, and then plot!
+plot_data <- plot_data[order(row.names(plot_data)),]
+meta.second.2 <- meta.second[order(row.names(meta.second)),]
+
+plot_data_2 <- as.data.frame(plot_data[,1:2])
+row.names(plot_data_2) <- row.names(plot_data)
+colnames(plot_data_2)[1] <- "PC1"
+colnames(plot_data_2)[2] <- "PC2"
+
+meta.second.3 <- merge(meta.second.2, plot_data_2, by="row.names")
+row.names(meta.second.3) <- meta.second.3$Row.names
+
+
+meta.second.3$rfi_recent <- as.numeric(meta.second.3$rfi_recent)
+meta.second.3$GFE <- as.numeric(meta.second.3$GFE)
+
+
+##Linear modelling of GFE/RFI against PC1 axis for ALL ANIMALS
+GFE.pc1.2 <- ggplot(meta.second.3, aes(GFE, PC1), geom_smooth(method="lm", se=FALSE)) +
+    geom_point() +
+    xlab("Gross Feed Efficiency") +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("GFE x PC1")
+
+GFE.pc2.2 <- ggplot(meta.second.3, aes(GFE, PC2), geom_smooth(method="lm", se=FALSE)) +
+    geom_point() +
+    xlab("Gross Feed Efficiency") +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("GFE x PC2")
+
+
+
+
+RFI.pc1.2 <- ggplot(meta.second.3, aes(rfi_recent, PC1)) +
+    geom_point() +
+    xlab("Residual Feed Intake") +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("RFI x PC1")
+
+RFI.pc2.2 <- ggplot(meta.second.3, aes(rfi_recent, PC2)) +
+    geom_point() +
+    xlab("Residual Feed Intake") +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle("RFI x PC2")
+
+
+lm_fit_GFE.PC1 <- lm(GFE ~ PC1, data=meta.second.3)
+summary(lm_fit_GFE.PC1)
+#Not significant
+
+lm_fit_RFI.PC1 <- lm(rfi_recent ~ PC1, data=meta.second.3)
+summary(lm_fit_RFI.PC1)
+#Significant!
+
+
+
+lm_fit_GFE.PC2 <- lm(GFE ~ PC2, data=meta.second.3)
+summary(lm_fit_GFE.PC2)
+#Not significant
+
+lm_fit_RFI.PC2 <- lm(rfi_recent ~ PC2, data=meta.second.3)
+summary(lm_fit_RFI.PC2)
+#Not significant
+ 
+RFI.pc1.2
+
+grid.arrange(GFE.pc1.2, GFE.pc2.2, RFI.pc1.2, RFI.pc2.2, top = "Second Lactation", ncol = 2)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

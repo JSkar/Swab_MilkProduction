@@ -1,0 +1,474 @@
+---
+title: "DESeq2 Analysis of DIM and Milk Volume"
+author: "Joseph Skarlupka V"
+output: html_document
+date: "2024-10-31"
+---
+
+#Loading Libraries
+```{r, Libraries}
+library("ggplot2")
+library("phyloseq")
+library("vegan")
+library("DESeq2")
+library("reltools")
+library("phylosmith")
+
+set.seed(81471438)
+```
+
+#Load data
+```{r}
+load("NO RARE 1st Lactation ARS Swabs Abund Cutoff Physeq Object.RData")
+
+physeq.norare.abund <- subset_samples(physeq.norare.abund, as.numeric(PARITY) < 4)
+
+
+sample_data(physeq.norare.abund)$Milk7d_T1 <- as.numeric(sample_data(physeq.norare.abund)$Milk7d_T1)
+
+sample_data(physeq.norare.abund)$DIM <- as.numeric(sample_data(physeq.norare.abund)$DIM)
+
+
+```
+
+```{r}
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+
+alpha = 0.05
+
+```
+
+
+```{r}
+#All Lactations
+#Using the Milk_Tier label
+sample_data(physeq.norare.abund)$Milk_Tier <- factor(sample_data(physeq.norare.abund)$Milk_Tier, levels = c("Low", "Mid", "High"))
+
+ds.Vol = phyloseq_to_deseq2(physeq.norare.abund, ~ Milk_Tier)
+ds.Vol = DESeq(ds.Vol, sfType = "poscounts")
+
+res.Vol = results(ds.Vol, contrast=c("Milk_Tier", "High", "Low"), alpha=alpha)
+res.Vol = res.Vol[order(res.Vol$padj, na.last=NA), ]
+res_sig.Vol = res.Vol[(res.Vol$padj < alpha), ]
+res_sig.Vol
+
+res_sig.Vol = cbind(as(res_sig.Vol, "data.frame"), as(tax_table(physeq.norare.abund)[rownames(res_sig.Vol), ], "matrix"))
+ggplot(res_sig.Vol, aes(x=Genus, y=log2FoldChange, color=Phylum)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+par(mfrow=c(1,1))
+
+
+#Using the DIM Tier label
+sample_data(physeq.norare.abund)$STAGE <- factor(sample_data(physeq.norare.abund)$STAGE, levels = c("Early", "Middle", "Late"))
+
+ds.Stage = phyloseq_to_deseq2(physeq.norare.abund, ~ STAGE)
+ds.Stage = DESeq(ds.Stage, sfType = "poscounts")
+
+res.Stage = results(ds.Stage, contrast=c("STAGE", "Early", "Late"), alpha=alpha)
+res.Stage = res.Stage[order(res.Stage$padj, na.last=NA), ]
+res_sig.Stage = res.Stage[(res.Stage$padj < alpha), ]
+res_sig.Stage
+
+res_sig.Stage = cbind(as(res_sig.Stage, "data.frame"), as(tax_table(physeq.norare.abund)[rownames(res_sig.Stage), ], "matrix"))
+ggplot(res_sig.Stage, aes(x=Genus, y=log2FoldChange, color=Phylum)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+par(mfrow=c(1,1))
+
+#Only got a few oral bacteria
+
+
+#Testing Milk7d_T1 as a continuous in DESeq2
+pds.all.vol <- phyloseq_to_deseq2(physeq.norare.abund, ~Milk7d_T1)
+
+geoMeans = apply(counts(pds.all.vol), 1, gm_mean)
+pds.all.vol = estimateSizeFactors(pds.all.vol, geoMeans = geoMeans)
+pds.all.vol = DESeq(pds.all.vol)
+
+res2 <- results(pds.all.vol, cooksCutoff = FALSE)
+sigtab2.all.vol <- res2[which(res2$padj < alpha), ]
+sigtab2.all.vol <- cbind(as(sigtab2.all.vol,"data.frame"), as(tax_table(physeq.norare.abund)[rownames(sigtab2.all.vol), ], "matrix"))
+head(sigtab2.all.vol,20)
+
+rm(list=c("geoMeans", "res2"))
+
+#Testing DIM as a continuous in DESeq2
+pds.all.dim <- phyloseq_to_deseq2(physeq.norare.abund, ~DIM)
+
+geoMeans = apply(counts(pds.all.dim), 1, gm_mean)
+pds.all.dim = estimateSizeFactors(pds.all.dim, geoMeans = geoMeans)
+pds.all.dim = DESeq(pds.all.dim)
+
+res2 <- results(pds.all.dim, cooksCutoff = FALSE)
+sigtab2.all.dim <- res2[which(res2$padj < alpha), ]
+sigtab2.all.dim <- cbind(as(sigtab2.all.dim,"data.frame"), as(tax_table(physeq.norare.abund)[rownames(sigtab2.all.dim), ], "matrix"))
+head(sigtab2.all.dim,20)
+
+rm(list=c("geoMeans", "res2"))
+
+```
+
+
+```{r}
+#First Lactation
+#Using the Milk_Tier label
+physeq.1 <- subset_samples(physeq.norare.abund, parity.group == "First")
+
+#Milk Production - Creating High and Low Tiers of Milk Production Based on the top/bottom 20%
+
+Milk7d_T1 <- sample_data(physeq.1)$Milk7d_T1
+Milk7d_T1 <- Milk7d_T1[order(Milk7d_T1)]
+Milk7d_T1
+
+cutoff = round((0.2 * length(Milk7d_T1)), digits=0)
+
+#List is sorted from lowest to highest
+Milk7d_T1[cutoff]
+  # 59.2
+#Anything lower than 59.2 is considered Low Production
+
+Milk7d_T1[(length(Milk7d_T1) - cutoff)]
+  # 87.2
+#Anything higher than 87.2 is considered High Production
+
+sample_data(physeq.1)$Milk_Tier <- ifelse(sample_data(physeq.1)$Milk7d_T1 <= 59.2, "Low", ifelse(sample_data(physeq.1)$Milk7d_T1 >= 87.2, "High", "Mid"))
+
+rm(list=c("Milk7d_T1", "cutoff"))
+
+sample_data(physeq.1)$Milk_Tier <- factor(sample_data(physeq.1)$Milk_Tier, levels = c("Low", "Mid", "High"))
+
+ds.Vol = phyloseq_to_deseq2(physeq.1, ~ Milk_Tier)
+ds.Vol = DESeq(ds.Vol, sfType = "poscounts")
+
+alpha = 0.05
+res.Vol = results(ds.Vol, contrast=c("Milk_Tier", "High", "Low"), alpha=alpha)
+res.Vol = res.Vol[order(res.Vol$padj, na.last=NA), ]
+res_sig.Vol = res.Vol[(res.Vol$padj < alpha), ]
+res_sig.Vol
+
+res_sig.Vol = cbind(as(res_sig.Vol, "data.frame"), as(tax_table(physeq.1)[rownames(res_sig.Vol), ], "matrix"))
+ggplot(res_sig.Vol, aes(x=Genus, y=log2FoldChange, color=Phylum)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+#Got a two rumen bugs and one oral bug!
+
+
+#Using the DIM Tier label
+table(sample_data(physeq.1)$STAGE)
+ # Early   Late Middle 
+ #     1     52     21 
+
+sample_data(physeq.1)$STAGE <- factor(sample_data(physeq.1)$STAGE, levels = c("Early", "Middle", "Late"))
+
+ds.Stage = phyloseq_to_deseq2(physeq.1, ~ STAGE)
+ds.Stage = DESeq(ds.Stage, sfType = "poscounts")
+
+alpha = 0.05
+res.Stage = results(ds.Stage, contrast=c("STAGE", "Early", "Late"), alpha=alpha)
+res.Stage = res.Stage[order(res.Stage$padj, na.last=NA), ]
+res_sig.Stage = res.Stage[(res.Stage$padj < alpha), ]
+res_sig.Stage
+
+res_sig.Stage = cbind(as(res_sig.Stage, "data.frame"), as(tax_table(physeq.1)[rownames(res_sig.Stage), ], "matrix"))
+ggplot(res_sig.Stage, aes(x=Genus, y=log2FoldChange, color=Phylum)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+#Got one oral bug
+
+
+
+#Testing Milk7d_T1 as a continuous in DESeq2
+pds.1.vol <- phyloseq_to_deseq2(physeq.1, ~Milk7d_T1)
+
+geoMeans = apply(counts(pds.1.vol), 1, gm_mean)
+pds.1.vol = estimateSizeFactors(pds.1.vol, geoMeans = geoMeans)
+pds.1.vol = DESeq(pds.1.vol)
+
+res2 <- results(pds.1.vol, cooksCutoff = FALSE)
+sigtab2.1.vol <- res2[which(res2$padj < alpha), ]
+sigtab2.1.vol <- cbind(as(sigtab2.1.vol,"data.frame"), as(tax_table(physeq.1)[rownames(sigtab2.1.vol), ], "matrix"))
+head(sigtab2.1.vol,20)
+
+rm(list=c("geoMeans", "res2"))
+
+#Testing DIM as a continuous in DESeq2
+pds.1.dim <- phyloseq_to_deseq2(physeq.1, ~DIM)
+
+geoMeans = apply(counts(pds.1.dim), 1, gm_mean)
+pds.1.dim = estimateSizeFactors(pds.1.dim, geoMeans = geoMeans)
+pds.1.dim = DESeq(pds.1.dim)
+
+res2 <- results(pds.1.dim, cooksCutoff = FALSE)
+sigtab2.1.dim <- res2[which(res2$padj < alpha), ]
+sigtab2.1.dim <- cbind(as(sigtab2.1.dim,"data.frame"), as(tax_table(physeq.1)[rownames(sigtab2.1.dim), ], "matrix"))
+head(sigtab2.1.dim,20)
+
+rm(list=c("geoMeans", "res2"))
+
+
+```
+
+
+```{r}
+#Second Lactation
+#Using the Milk_Tier label
+physeq.2 <- subset_samples(physeq.norare.abund, parity.group == "Second")
+
+#Milk Production - Creating High and Low Tiers of Milk Production Based on the top/bottom 20%
+
+Milk7d_T1 <- sample_data(physeq.2)$Milk7d_T1
+Milk7d_T1 <- Milk7d_T1[order(Milk7d_T1)]
+Milk7d_T1
+
+cutoff = round((0.2 * length(Milk7d_T1)), digits=0)
+
+#List is sorted from lowest to highest
+Milk7d_T1[cutoff]
+  # 70.6
+#Anything lower than 70.6 is considered Low Production
+
+Milk7d_T1[(length(Milk7d_T1) - cutoff)]
+  # 109
+#Anything higher than 109 is considered High Production
+
+sample_data(physeq.1)$Milk_Tier <- ifelse(sample_data(physeq.1)$Milk7d_T1 <= 70.6, "Low", ifelse(sample_data(physeq.1)$Milk7d_T1 >= 109, "High", "Mid"))
+
+rm(list=c("Milk7d_T1", "cutoff"))
+
+sample_data(physeq.2)$Milk_Tier <- factor(sample_data(physeq.2)$Milk_Tier, levels = c("Low", "Mid", "High"))
+
+ds.Vol = phyloseq_to_deseq2(physeq.2, ~ Milk_Tier)
+ds.Vol = DESeq(ds.Vol, sfType = "poscounts")
+
+alpha = 0.05
+res.Vol = results(ds.Vol, contrast=c("Milk_Tier", "High", "Low"), alpha=alpha)
+res.Vol = res.Vol[order(res.Vol$padj, na.last=NA), ]
+res_sig.Vol = res.Vol[(res.Vol$padj < alpha), ]
+res_sig.Vol
+
+res_sig.Vol = cbind(as(res_sig.Vol, "data.frame"), as(tax_table(physeq.2)[rownames(res_sig.Vol), ], "matrix"))
+ggplot(res_sig.Vol, aes(x=Genus, y=log2FoldChange, color=Phylum)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+#Nothing
+
+#Using the DIM Tier label
+table(sample_data(physeq.2)$STAGE)
+ # Early   Late Middle 
+ #     3     41     35 
+
+
+sample_data(physeq.2)$STAGE <- factor(sample_data(physeq.2)$STAGE, levels = c("Early", "Middle", "Late"))
+
+ds.Stage = phyloseq_to_deseq2(physeq.2, ~ STAGE)
+ds.Stage = DESeq(ds.Stage, sfType = "poscounts")
+
+alpha = 0.05
+res.Stage = results(ds.Stage, contrast=c("STAGE", "Early", "Late"), alpha=alpha)
+res.Stage = res.Stage[order(res.Stage$padj, na.last=NA), ]
+res_sig.Stage = res.Stage[(res.Stage$padj < alpha), ]
+res_sig.Stage
+
+res_sig.Stage = cbind(as(res_sig.Stage, "data.frame"), as(tax_table(physeq.2)[rownames(res_sig.Stage), ], "matrix"))
+ggplot(res_sig.Stage, aes(x=Genus, y=log2FoldChange, color=Phylum)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+#Three oral bugs
+
+
+#Testing Milk7d_T1 as a continuous in DESeq2
+pds.2.vol <- phyloseq_to_deseq2(physeq.2, ~Milk7d_T1)
+
+geoMeans = apply(counts(pds.2.vol), 1, gm_mean)
+pds.2.vol = estimateSizeFactors(pds.2.vol, geoMeans = geoMeans)
+pds.2.vol = DESeq(pds.2.vol)
+
+res2 <- results(pds.2.vol, cooksCutoff = FALSE)
+sigtab2.2.vol <- res2[which(res2$padj < alpha), ]
+sigtab2.2.vol <- cbind(as(sigtab2.2.vol,"data.frame"), as(tax_table(physeq.1)[rownames(sigtab2.2.vol), ], "matrix"))
+head(sigtab2.2.vol,20)
+
+rm(list=c("geoMeans", "res2"))
+
+#Testing DIM as a continuous in DESeq2
+pds.2.dim <- phyloseq_to_deseq2(physeq.2, ~DIM)
+
+geoMeans = apply(counts(pds.2.dim), 1, gm_mean)
+pds.2.dim = estimateSizeFactors(pds.2.dim, geoMeans = geoMeans)
+pds.2.dim = DESeq(pds.2.dim)
+
+res2 <- results(pds.2.dim, cooksCutoff = FALSE)
+sigtab2.2.dim <- res2[which(res2$padj < alpha), ]
+sigtab2.2.dim <- cbind(as(sigtab2.2.dim,"data.frame"), as(tax_table(physeq.1)[rownames(sigtab2.2.dim), ], "matrix"))
+head(sigtab2.2.dim,20)
+
+rm(list=c("geoMeans", "res2"))
+
+
+
+
+```
+
+
+```{r}
+#Third Lactation
+#Using the Milk_Tier label
+physeq.3 <- subset_samples(physeq.norare.abund, as.numeric(PARITY) == 3)
+
+#Milk Production - Creating High and Low Tiers of Milk Production Based on the top/bottom 20%
+
+Milk7d_T1 <- sample_data(physeq.3)$Milk7d_T1
+Milk7d_T1 <- Milk7d_T1[order(Milk7d_T1)]
+Milk7d_T1
+
+cutoff = round((0.2 * length(Milk7d_T1)), digits=0)
+
+#List is sorted from lowest to highest
+Milk7d_T1[cutoff]
+  # 73.7
+#Anything lower than 73.7 is considered Low Production
+
+Milk7d_T1[(length(Milk7d_T1) - cutoff)]
+  # 113
+#Anything higher than 113 is considered High Production
+
+sample_data(physeq.1)$Milk_Tier <- ifelse(sample_data(physeq.1)$Milk7d_T1 <= 73.7, "Low", ifelse(sample_data(physeq.1)$Milk7d_T1 >= 113, "High", "Mid"))
+
+rm(list=c("Milk7d_T1", "cutoff"))
+
+sample_data(physeq.3)$Milk_Tier <- factor(sample_data(physeq.3)$Milk_Tier, levels = c("Low", "Mid", "High"))
+
+ds.Vol = phyloseq_to_deseq2(physeq.3, ~ Milk_Tier)
+ds.Vol = DESeq(ds.Vol, sfType = "poscounts")
+
+alpha = 0.05
+res.Vol = results(ds.Vol, contrast=c("Milk_Tier", "High", "Low"), alpha=alpha)
+res.Vol = res.Vol[order(res.Vol$padj, na.last=NA), ]
+res_sig.Vol = res.Vol[(res.Vol$padj < alpha), ]
+res_sig.Vol
+
+res_sig.Vol = cbind(as(res_sig.Vol, "data.frame"), as(tax_table(physeq.3)[rownames(res_sig.Vol), ], "matrix"))
+ggplot(res_sig.Vol, aes(x=Genus, y=log2FoldChange, color=Phylum)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+#Two oral, one rumen, and one unknown
+
+#Using the DIM Tier label
+table(sample_data(physeq.3)$STAGE)
+# Early   Late Middle 
+#      1    112     82 
+
+
+sample_data(physeq.3)$STAGE <- factor(sample_data(physeq.3)$STAGE, levels = c("Early", "Middle", "Late"))
+
+ds.Stage = phyloseq_to_deseq2(physeq.3, ~ STAGE)
+ds.Stage = DESeq(ds.Stage, sfType = "poscounts")
+
+alpha = 0.05
+res.Stage = results(ds.Stage, contrast=c("STAGE", "Early", "Late"), alpha=alpha)
+res.Stage = res.Stage[order(res.Stage$padj, na.last=NA), ]
+res_sig.Stage = res.Stage[(res.Stage$padj < alpha), ]
+res_sig.Stage
+
+res_sig.Stage = cbind(as(res_sig.Stage, "data.frame"), as(tax_table(physeq.3)[rownames(res_sig.Stage), ], "matrix"))
+ggplot(res_sig.Stage, aes(x=Genus, y=log2FoldChange, color=Phylum)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+#A LOT of oral bugs
+
+
+
+#Testing Milk7d_T1 as a continuous in DESeq2
+pds.3.vol <- phyloseq_to_deseq2(physeq.3, ~Milk7d_T1)
+
+geoMeans = apply(counts(pds.3.vol), 1, gm_mean)
+pds.3.vol = estimateSizeFactors(pds.3.vol, geoMeans = geoMeans)
+pds.3.vol = DESeq(pds.3.vol)
+
+res2 <- results(pds.3.vol, cooksCutoff = FALSE)
+sigtab2.3.vol <- res2[which(res2$padj < alpha), ]
+sigtab2.3.vol <- cbind(as(sigtab2.3.vol,"data.frame"), as(tax_table(physeq.1)[rownames(sigtab2.3.vol), ], "matrix"))
+head(sigtab2.3.vol,20)
+
+rm(list=c("geoMeans", "res2"))
+
+#Testing DIM as a continuous in DESeq2
+pds.3.dim <- phyloseq_to_deseq2(physeq.3, ~DIM)
+
+geoMeans = apply(counts(pds.3.dim), 1, gm_mean)
+pds.3.dim = estimateSizeFactors(pds.3.dim, geoMeans = geoMeans)
+pds.3.dim = DESeq(pds.3.dim)
+
+res2 <- results(pds.3.dim, cooksCutoff = FALSE)
+sigtab2.3.dim <- res2[which(res2$padj < alpha), ]
+sigtab2.3.dim <- cbind(as(sigtab2.3.dim,"data.frame"), as(tax_table(physeq.1)[rownames(sigtab2.3.dim), ], "matrix"))
+head(sigtab2.3.dim,20)
+
+rm(list=c("geoMeans", "res2"))
+```
+
+#Combining DESeq results from the continuous analyses into one dataframe then exporting
+```{r}
+library(dplyr)
+
+sigtab2.all.dim$Comp <- "All_DIM"
+sigtab2.1.dim$Comp <- "1_DIM"
+sigtab2.2.dim$Comp <- "2_DIM"
+sigtab2.3.dim$Comp <- "3_DIM"
+
+sigtab2.all.vol$Comp <- "All_Vol"
+sigtab2.1.vol$Comp <- "1_Vol"
+sigtab2.2.vol$Comp <- "2_Vol"
+sigtab2.3.vol$Comp <- "3_Vol"
+
+
+sigtab2.all.dim$ASV <- row.names(sigtab2.all.dim)
+sigtab2.1.dim$ASV <- row.names(sigtab2.1.dim)
+sigtab2.2.dim$ASV <- row.names(sigtab2.2.dim)
+sigtab2.3.dim$ASV <- row.names(sigtab2.3.dim)
+
+sigtab2.all.vol$ASV <- row.names(sigtab2.all.vol)
+sigtab2.1.vol$ASV <- row.names(sigtab2.1.vol)
+sigtab2.2.vol$ASV <- row.names(sigtab2.2.vol)
+sigtab2.3.vol$ASV <- row.names(sigtab2.3.vol)
+
+
+DESeq2_Results <- bind_rows(sigtab2.all.dim, sigtab2.1.dim, sigtab2.2.dim, sigtab2.3.dim, sigtab2.all.vol, sigtab2.1.vol, sigtab2.2.vol)
+
+row.names(DESeq2_Results) <- NULL
+
+
+write.csv(DESeq2_Results, file="DESeq2 Results Volume and DIM.csv")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

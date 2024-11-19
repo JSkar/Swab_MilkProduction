@@ -1,0 +1,359 @@
+---
+title: "Correlation and Heatplot Analysis"
+output: html_document
+date: "2024-10-31"
+---
+
+```{r}
+library("miLineage")
+library("Maaslin2")
+library("ggplot2")
+library("phyloseq")
+library("vegan")
+library("DESeq2")
+library("reltools")
+library("phylosmith")
+library("gridExtra")
+library("ggpubr")
+library("dplyr")
+
+
+set.seed(81471438)
+
+load("Physeq Object All Samples No Rare or Abund.RData")
+
+```
+
+```{r}
+physeq.swab1.rare <- rarefy_even_depth(physeq, sample.size=7000)
+
+physeq.swab1.abund <- prune_taxa(taxa_sums(physeq.swab1.rare)>10,physeq.swab1.rare)
+
+```
+
+#Preparing data
+```{r}
+ps_genus <- tax_glom(physeq.swab1.abund, taxrank = "Genus")
+
+ps_rel <- transform_sample_counts(ps_genus, function(x) x/sum(x))
+
+
+# Set the threshold for relative abundance
+threshold <- 0.001
+
+# Create a logical matrix indicating which ASVs are below the threshold in each sample
+below_threshold <- otu_table(ps_rel) < threshold
+
+# Find ASVs that are below the threshold in all samples
+asvs_below_threshold <- rowSums(below_threshold) == nsamples(ps_rel)
+
+# Get the list of ASV IDs that are below the threshold in all samples
+asvs_to_remove_minabund <- taxa_names(ps_rel)[asvs_below_threshold]
+#There are no genera where there is less than 0.01% abundance in all animals
+
+
+
+
+# Create a logical matrix indicating presence/absence of each ASV in each sample
+presence_absence <- otu_table(ps_genus) > 0
+
+# Calculate the prevalence (number of samples each ASV is present in)
+asv_prevalence <- rowSums(presence_absence)
+
+# Calculate the threshold for 50% of the samples
+sample_threshold <- nsamples(ps_genus) * 0.5
+
+# Find ASVs that are present in less than 50% of the samples
+asvs_below_50pct <- asv_prevalence < sample_threshold
+
+# Get the list of ASV IDs that are present in less than 50% of the samples
+asvs_to_remove_minprev <- taxa_names(ps_genus)[asvs_below_50pct]
+#identified 319 genera for removal
+
+
+#remove identified genera
+ps_genus_filtered <- prune_taxa(!taxa_names(ps_genus) %in% asvs_to_remove_minprev, ps_genus)
+#368 genera remaining
+
+
+#remove all but the 75 most abundant genera
+# Calculate the total abundance of each genus across all samples
+genus_abundance <- taxa_sums(ps_genus_filtered)
+
+# Identify the 75 most abundant genera
+top_75_genera <- names(sort(genus_abundance, decreasing = TRUE))[1:75]
+
+# Prune the phyloseq object to retain only the top 75 most abundant genera
+ps_genus_top_75 <- prune_taxa(top_75_genera, ps_genus_filtered)
+
+# Verify the filtering
+ps_genus_top_75
+
+sample_data(ps_genus_top_75)$parity.group <- ifelse(sample_data(ps_genus_top_75)$PARITY == 3, "Third", sample_data(ps_genus_top_75)$parity.group)
+
+
+```
+
+#Further preparing data
+```{r}
+ps_genus_top_75 <- subset_samples(ps_genus_top_75, parity.group != "Multi")
+
+genera <- as.matrix(otu_table(ps_genus_top_75))
+genera <- as.data.frame(genera)
+
+genera <- mutate_all(genera, as.numeric)
+
+
+meta <- as.matrix(sample_data(ps_genus_top_75))
+meta <- as.data.frame(meta)
+
+meta_sub <- subset(meta, select = c(DIM, PARITY, Milk7d_T1))
+
+meta_sub <- mutate_all(meta_sub, as.numeric)
+
+meta_sub$STAGE <- ifelse(meta_sub$DIM < 101, "Early", ifelse((meta_sub$DIM >=101 & meta_sub$DIM < 202), "Middle", "Late"))
+
+meta_sub$PARITY.GROUP <- ifelse(meta_sub$PARITY == 1, "First", ifelse(meta_sub$PARITY == 2, "Second", ifelse(meta_sub$PARITY == 3, "Third", "Multi")))
+
+meta_sub$Parity.Stage <- paste0(meta_sub$PARITY.GROUP,".",meta_sub$STAGE)
+
+meta_sub$Parity.Stage <- factor(meta_sub$Parity.Stage, levels=c("First.Early", "First.Middle", "First.Late", "Second.Early", "Second.Middle", "Second.Late", "Third.Early", "Third.Middle", "Third.Late"))
+
+table(meta_sub$Parity.Stage)
+
+# First.Early  First.Middle    First.Late  Second.Early Second.Middle   Second.Late   Third.Early  Third.Middle    Third.Late 
+#            32            14            24            18            30            25            12            25            28 
+
+rm(list=c("asv_prevalence", "asvs_below_50pct", "asvs_below_threshold", "asvs_to_remove_minabund", "asvs_to_remove_minprev", "below_threshold", "genus_abundance", "presence_absence", "sample_threshold", "threshold", "top_75_genera"))
+
+```
+
+#Spearman correlation with Volume and DIM for All Three Lactations
+```{r}
+#Iterate over every ASV, and run a correlation of that against the milk production. 
+#In each iteration, take the ASV name, comparison being made, p value, and correlation score, and add it to a new dataframe
+
+#blank dataframe
+spearman_results_ALL <- data.frame(
+  Genus = character(0),
+  Comparison = character(0),
+  p.vol = numeric(0),
+  Corr.vol = numeric(0),
+  p.dim = numeric(0),
+  Corr.dim = numeric(0)
+)
+
+#Generates the table for ALL animals, no blocking
+for (value in 1:ncol(genera)) {
+  result.vol <- cor.test(genera[,value], as.numeric(meta_sub$Milk7d_T1), method = "spearman", exact = FALSE)
+  
+  result.dim <- cor.test(genera[,value], as.numeric(meta_sub$DIM), method = "spearman", exact = FALSE)
+  
+  df.temp = data.frame(Genus = colnames(genera)[value], Comparison = "All", p.vol = result.vol$p.value, Corr.vol = result.vol$estimate, p.dim = result.dim$p.value, Corr.dim = result.dim$estimate )
+  
+  spearman_results_ALL = rbind(spearman_results_ALL, df.temp)
+  
+}
+
+rm(list=c("df.temp", "result.dim", "value", "result.vol"))
+
+spearman_results_ALL$p.vol.adjust <- p.adjust(spearman_results_ALL$p.vol, method = "fdr")
+
+spearman_results_ALL$p.dim.adjust <- p.adjust(spearman_results_ALL$p.dim, method = "fdr")
+
+
+```
+
+#Do again, but for the individual parities
+```{r}
+#Subsetting
+meta_sub_first <- meta_sub[meta_sub$PARITY == 1,]
+genera_first <- genera[row.names(genera) %in% row.names(meta_sub_first),]
+
+meta_sub_second <- meta_sub[meta_sub$PARITY == 2,]
+genera_second <- genera[row.names(genera) %in% row.names(meta_sub_second),]
+
+meta_sub_third <- meta_sub[meta_sub$PARITY == 3,]
+genera_third <- genera[row.names(genera) %in% row.names(meta_sub_third),]
+
+
+#FIRST
+#blank dataframe
+spearman_results_first <- data.frame(
+  Genus = character(0),
+  Comparison = character(0),
+  p.vol = numeric(0),
+  Corr.vol = numeric(0),
+  p.dim = numeric(0),
+  Corr.dim = numeric(0)
+)
+
+#Generates the table for first lactation animals
+for (value in 1:ncol(genera_first)) {
+  result.vol <- cor.test(genera_first[,value], as.numeric(meta_sub_first$Milk7d_T1), method = "spearman", exact = FALSE)
+  
+  result.dim <- cor.test(genera_first[,value], as.numeric(meta_sub_first$DIM), method = "spearman", exact = FALSE)
+  
+  df.temp = data.frame(Genus = colnames(genera_first)[value], Comparison = "FirstLact", p.vol = result.vol$p.value, Corr.vol = result.vol$estimate, p.dim = result.dim$p.value, Corr.dim = result.dim$estimate )
+  
+  spearman_results_first = rbind(spearman_results_first, df.temp)
+  
+}
+spearman_results_first$p.vol.adjust <- p.adjust(spearman_results_first$p.vol, method = "fdr")
+
+spearman_results_first$p.dim.adjust <- p.adjust(spearman_results_first$p.dim, method = "fdr")
+
+
+#SECOND
+#blank dataframe
+spearman_results_second <- data.frame(
+  Genus = character(0),
+  Comparison = character(0),
+  p.vol = numeric(0),
+  Corr.vol = numeric(0),
+  p.dim = numeric(0),
+  Corr.dim = numeric(0)
+)
+
+#Generates the table for first lactation animals
+for (value in 1:ncol(genera_second)) {
+  result.vol <- cor.test(genera_second[,value], as.numeric(meta_sub_second$Milk7d_T1), method = "spearman", exact = FALSE)
+  
+  result.dim <- cor.test(genera_second[,value], as.numeric(meta_sub_second$DIM), method = "spearman", exact = FALSE)
+  
+  df.temp = data.frame(Genus = colnames(genera_second)[value], Comparison = "SecondLact", p.vol = result.vol$p.value, Corr.vol = result.vol$estimate, p.dim = result.dim$p.value, Corr.dim = result.dim$estimate )
+  
+  spearman_results_second = rbind(spearman_results_second, df.temp)
+  
+}
+spearman_results_second$p.vol.adjust <- p.adjust(spearman_results_second$p.vol, method = "fdr")
+
+spearman_results_second$p.dim.adjust <- p.adjust(spearman_results_second$p.dim, method = "fdr")
+
+
+#THIRD
+#blank dataframe
+spearman_results_third <- data.frame(
+  Genus = character(0),
+  Comparison = character(0),
+  p.vol = numeric(0),
+  Corr.vol = numeric(0),
+  p.dim = numeric(0),
+  Corr.dim = numeric(0)
+)
+
+#Generates the table for multiple lactation (>=3) animals
+for (value in 1:ncol(genera_third)) {
+  result.vol <- cor.test(genera_third[,value], as.numeric(meta_sub_third$Milk7d_T1), method = "spearman", exact = FALSE)
+  
+  result.dim <- cor.test(genera_third[,value], as.numeric(meta_sub_third$DIM), method = "spearman", exact = FALSE)
+  
+  df.temp = data.frame(Genus = colnames(genera_third)[value], Comparison = "ThirdLact", p.vol = result.vol$p.value, Corr.vol = result.vol$estimate, p.dim = result.dim$p.value, Corr.dim = result.dim$estimate )
+  
+  spearman_results_third = rbind(spearman_results_third, df.temp)
+  
+}
+spearman_results_third$p.vol.adjust <- p.adjust(spearman_results_third$p.vol, method = "fdr")
+
+spearman_results_third$p.dim.adjust <- p.adjust(spearman_results_third$p.dim, method = "fdr")
+
+
+
+#Consolidate into one dataframe
+spearman_results_DIM = rbind(spearman_results_ALL, spearman_results_first, spearman_results_second, spearman_results_third)
+
+```
+
+#Plot DIM heatmap
+```{r}
+tax_75 <- as.matrix(tax_table(ps_genus_top_75))
+tax_75 <- as.data.frame(tax_75)
+
+tax_75$Genus <- ifelse(tax_75$Genus == "Unclassified", paste0("(Family) ", tax_75$Family), tax_75$Genus)
+
+tax_75$Genus <- ifelse(tax_75$Genus == "(Family) Unclassified", paste0("(Order) ", tax_75$Order), tax_75$Genus)
+
+tax_75$Genus <- ifelse(tax_75$Genus == "(Order) Unclassified", paste0("(Class) ", tax_75$Class), tax_75$Genus)
+
+tax_75$Genus <- ifelse(tax_75$Genus == "(Class) Unclassified", "Unclassified Bacteria", tax_75$Genus)
+
+tax_75$ASV <- rownames(tax_75)
+
+taxa_list <- as.list(tax_75$Genus)
+
+colnames(spearman_results_DIM)[colnames(spearman_results_DIM) == "Genus"] <- "ASV"
+
+spearman_results_DIM <- merge(spearman_results_DIM, tax_75, by = "ASV", all.x = TRUE)
+
+spearman_results_DIM$Comparison <- factor(spearman_results_DIM$Comparison, levels = c("All", "FirstLact", "SecondLact", "ThirdLact"))
+
+spearman_results_DIM$Genus <- factor(spearman_results_DIM$Genus, levels = taxa_list)
+
+
+#Spearman Correlation to DIM with Stars for Significance
+heat_p_DIM <- ggplot(spearman_results_DIM, aes(x=Genus, y=Comparison, fill=Corr.dim)) + 
+  geom_tile(colour="white", linewidth=0.2) + 
+  coord_fixed() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=18),
+        axis.text.y = element_text(size=18)) +
+  geom_text(aes(label = ifelse(p.dim.adjust < 0.05, "*", "")), color = "black", size = 8, vjust = .6, hjust = 0.5) +
+  theme(panel.background = element_blank(),
+        panel.grid = element_blank()) +
+  labs(x="Genus", y="Lactation", fill="Correlation Score") +
+  theme(axis.title.x = element_text(size=25),
+        axis.title.y = element_text(size=25),
+        legend.title=element_text(hjust=0.5, size=15)) +
+  scale_y_discrete(labels=c("All" = "All", "FirstLact" = "First", "SecondLact" = "Second", "ThirdLact" = "Third"))
+  
+
+heat_p_DIM
+
+
+
+heat_corr_DIM <- ggplot(spearman_results_DIM, aes(x=Genus, y=Comparison, fill=Corr.dim)) + 
+  geom_tile() + 
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  geom_text(aes(label = ifelse((Corr.dim >= 0.3 | Corr.dim <= -0.3), round(Corr.dim, 2), "")), color = "black", size = 2, vjust = 0.5, hjust = 0.5) +
+  ggtitle("Spearman Correlation to DIM with Correlation Scores")
+
+heat_corr_DIM
+
+
+
+
+
+heat_p_VOL <- ggplot(spearman_results_DIM, aes(x=Genus, y=Comparison, fill=Corr.vol)) + 
+  geom_tile(colour="white", linewidth=0.2) + 
+  coord_fixed() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=18),
+        axis.text.y = element_text(size=18)) +
+  geom_text(aes(label = ifelse(p.vol.adjust < 0.05, "*", "")), color = "black", size = 8, vjust = .6, hjust = 0.5) +
+  theme(panel.background = element_blank(),
+        panel.grid = element_blank()) +
+  labs(x="Genus", y="Lactation", fill="Correlation Score") +
+  theme(axis.title.x = element_text(size=25),
+        axis.title.y = element_text(size=25),
+        legend.title=element_text(hjust=0.5, size=15)) +
+  scale_y_discrete(labels=c("All" = "All", "FirstLact" = "First", "SecondLact" = "Second", "ThirdLact" = "Third"))
+
+heat_p_VOL
+
+
+heat_corr_VOL <- ggplot(spearman_results_DIM, aes(x=Genus, y=Comparison, fill=Corr.vol)) + 
+  geom_tile() + 
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  geom_text(aes(label = ifelse((Corr.vol >= 0.3 | Corr.vol <= -0.3), round(Corr.vol, 2), "")), color = "black", size = 2, vjust = 0.5, hjust = 0.5) +
+  ggtitle("Spearman Correlation to Milk Volume with Correlation Scores")
+
+heat_corr_VOL
+
+save(spearman_results_DIM, file = "Spearman Correlations Results Split by Parity.RData")
+
+```
+
+
+
